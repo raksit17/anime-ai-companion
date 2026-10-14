@@ -10,7 +10,8 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Snapshot { name: String, model_path: Option<String>, expression_map: Option<serde_json::Value>, emotion: String, mouth_open: f64, voice_state: String, connected: bool, busy: bool }
+#[serde(default)]
+struct Snapshot { name: String, model_path: Option<String>, expression_map: Option<serde_json::Value>, motion_map: Option<serde_json::Value>, interaction_state: String, emotion: String, mouth_open: f64, voice_state: String, connected: bool, busy: bool }
 #[derive(Clone, Default, Serialize)]
 struct Envelope { revision: u64, snapshot: Snapshot }
 #[derive(Default)]

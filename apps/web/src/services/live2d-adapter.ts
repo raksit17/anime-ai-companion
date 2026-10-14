@@ -1,4 +1,5 @@
 import * as PIXI from "pixi.js";
+import type { MotionMap } from "@companion/contracts";
 let corePromise: Promise<void> | undefined;
 function core() {
   return (corePromise ??= new Promise<void>((resolve, reject) => {
@@ -68,15 +69,49 @@ export async function createViewer(
       model.internalModel.coreModel.setParameterValueById(id, mouth);
   };
   model.internalModel.on("beforeModelUpdate", applyMouth);
+
+  let animationRevision = 0;
+  let animationQueue = Promise.resolve();
+  function enqueueAnimation(action: (revision: number) => Promise<void>) {
+    const revision = ++animationRevision;
+    const task = animationQueue.then(async () => {
+      if (revision === animationRevision) await action(revision);
+    });
+    animationQueue = task.catch(() => {});
+    return task;
+  }
+  async function runMotion(mapping: MotionMap[string] | undefined) {
+    if (!mapping?.group?.trim()) return;
+    const played = await model.motion(mapping.group, mapping.index);
+    if (!played)
+      console.warn(
+        `Live2D motion not found: ${mapping.group}[${mapping.index ?? "random"}]`,
+      );
+  }
+  function playMotion(mapping: MotionMap[string] | undefined) {
+    return enqueueAnimation(() => runMotion(mapping));
+  }
   return {
     setMouthOpen(value: number) {
       mouth = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
     },
-    async emotion(name: string, map: Record<string, string>) {
-      const expression = map[name];
-      if (expression) await model.expression(expression);
+    setEmotion(
+      name: string,
+      expressions: Record<string, string>,
+      motions: MotionMap,
+    ) {
+      const expression = expressions[name] ?? expressions.neutral;
+      return enqueueAnimation(async (revision) => {
+        if (expression) {
+          const applied = await model.expression(expression);
+          if (!applied)
+            throw new Error(`Live2D expression not found: ${expression}`);
+        }
+        if (revision === animationRevision) await runMotion(motions[name]);
+      });
     },
     destroy() {
+      animationRevision++;
       model.internalModel.off("beforeModelUpdate", applyMouth);
       observer.disconnect();
       app.destroy(false, { children: true, texture: true, baseTexture: true });

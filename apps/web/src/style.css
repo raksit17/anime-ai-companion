@@ -400,6 +400,16 @@ header {
 .user .message-meta {
   justify-content: flex-end;
 }
+.message-read {
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  color: #71816a;
+  font-size: 10px;
+}
+.message-read:disabled {
+  opacity: 0.5;
+}
 .bubble {
   border-radius: 3px 16px 16px 16px;
   background: #f0f3ec;
@@ -677,6 +687,18 @@ header {
   display: flex;
   gap: 7px;
   flex-wrap: wrap;
+}
+.auto-speak-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0;
+  color: #75826d;
+  font-size: 10px;
+}
+.auto-speak-option input {
+  width: auto;
+  margin: 0;
 }
 .voice-actions button {
   font-size: 11px;

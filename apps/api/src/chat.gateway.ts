@@ -134,7 +134,7 @@ export class ChatGateway implements OnGatewayDisconnect {
       }
       if (!content.trim()) throw new Error("โมเดลตอบข้อความว่าง");
       content = normalizeThaiFeminineEnding(content);
-      const emotion = await this.ai.emotion(content, signal);
+      const emotion = await this.ai.emotion(dto.content.trim(), content, signal);
       signal.throwIfAborted();
       const message = await this.db.message.create({
         data: {

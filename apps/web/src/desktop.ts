@@ -5,6 +5,8 @@ export interface Snapshot {
   name: string;
   modelPath: string | null;
   expressionMap: Record<string, string> | null;
+  motionMap: import("@companion/contracts").MotionMap | null;
+  interactionState: import("@companion/contracts").CharacterState;
   emotion: string;
   mouthOpen: number;
   voiceState: string;

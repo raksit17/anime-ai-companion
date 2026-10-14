@@ -13,6 +13,8 @@ const data = ref<Snapshot>({
   name: "Komorebi",
   modelPath: null,
   expressionMap: null,
+  motionMap: null,
+  interactionState: "idle",
   emotion: "neutral",
   mouthOpen: 0,
   voiceState: "idle",
@@ -20,6 +22,13 @@ const data = ref<Snapshot>({
   busy: false,
 });
 const error = ref("");
+const interactionLabels: Record<string, string> = {
+  idle: "พร้อมอยู่เป็นเพื่อน",
+  listening: "กำลังฟัง",
+  thinking: "กำลังคิดคำตอบ",
+  responding: "กำลังตอบคุณ",
+  speaking: "กำลังพูด",
+};
 let revision = -1;
 let off: (() => void) | undefined;
 function apply(e: Envelope) {
@@ -60,15 +69,15 @@ onBeforeUnmount(() => off?.());
     <Live2DViewer
       :model-path="data.modelPath"
       :expression-map="data.expressionMap"
+      :motion-map="data.motionMap"
+      :interaction-state="data.interactionState"
       :emotion="data.emotion || 'neutral'"
       :mouth-open="data.mouthOpen"
     />
     <footer class="companion-controls">
       <small>{{
         data.connected
-          ? data.busy
-            ? "กำลังคิด…"
-            : data.voiceState
+          ? interactionLabels[data.interactionState] || data.voiceState
           : "เปิดแชตเพื่อตั้งค่าการเชื่อมต่อ"
       }}</small>
       <div>
