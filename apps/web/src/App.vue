@@ -3,7 +3,7 @@ import DesktopSettings from "./components/DesktopSettings.vue";
 import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";
 import { useVoice } from "./stores/voice";
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { useChat } from "./stores/chat";
 import { api } from "./api";
 import Live2DViewer from "./components/Live2DViewer.vue";
@@ -24,7 +24,23 @@ const form = ref({
   systemPrompt: "",
   modelPath: "",
   expressionMap: "{}",
+  motionMap: "{}",
 });
+const interactionState = computed(() => {
+  if (voice.state === "listening") return "listening";
+  if (voice.state === "speaking") return "speaking";
+  if (chat.busy) return chat.partial ? "responding" : "thinking";
+  if (["requesting", "transcribing", "thinking", "synthesizing"].includes(voice.state))
+    return "thinking";
+  return "idle";
+});
+const interactionLabel: Record<string, string> = {
+  idle: "พร้อมรับฟังเรื่องราวของคุณ",
+  listening: "กำลังฟังคุณ…",
+  thinking: "กำลังคิดคำตอบ…",
+  responding: "กำลังตอบคุณ…",
+  speaking: "กำลังพูด",
+};
 const emoji: Record<string, string> = {
   neutral: "◌",
   happy: "☺",
@@ -49,6 +65,8 @@ onMounted(async () => {
         name: chat.character?.name ?? "Komorebi",
         modelPath: chat.character?.modelPath ?? null,
         expressionMap: chat.character?.expressionMap ?? null,
+        motionMap: chat.character?.motionMap ?? null,
+        interactionState: interactionState.value,
         emotion: chat.emotion,
         mouthOpen: voice.mouthOpen,
         voiceState: voice.state,
@@ -92,6 +110,7 @@ function openSettings(fresh = false) {
     systemPrompt: c?.systemPrompt ?? "",
     modelPath: c?.modelPath ?? "",
     expressionMap: JSON.stringify(c?.expressionMap ?? {}, null, 2),
+    motionMap: JSON.stringify(c?.motionMap ?? {}, null, 2),
   };
   settings.value = true;
 }
@@ -107,10 +126,26 @@ async function save() {
       throw new Error(
         "Expression map ต้องเป็น JSON object ที่มีค่าเป็นชื่อ expression",
       );
+    const motionMapping = JSON.parse(form.value.motionMap);
+    if (
+      !motionMapping ||
+      Array.isArray(motionMapping) ||
+      typeof motionMapping !== "object" ||
+      Object.values(motionMapping).some(
+        (value: any) =>
+          !value ||
+          typeof value.group !== "string" ||
+          !value.group.trim() ||
+          (value.index !== undefined &&
+            (!Number.isInteger(value.index) || value.index < 0)),
+      )
+    )
+      throw new Error("Motion map ต้องเป็น JSON object ที่มี group และ index ที่ถูกต้อง");
     const body = {
       ...form.value,
       modelPath: form.value.modelPath.trim() || undefined,
       expressionMap: mapping,
+      motionMap: motionMapping,
     };
     const c = await api<Character>(
       creating.value ? "/characters" : `/characters/${chat.character!.id}`,
@@ -127,7 +162,10 @@ async function send() {
   const value = text.value.trim();
   if (!value) return;
   text.value = "";
-  await chat.send(value);
+  await chat.guard(async () => {
+    const reply = await chat.sendAndWait(value, AbortSignal.timeout(320000));
+    if (voice.autoSpeak) await voice.replay(reply.content);
+  });
 }
 async function saveMemory() {
   await chat.guard(async () => {
@@ -270,6 +308,8 @@ async function deleteCharacter() {
           :model-path="chat.character?.modelPath ?? null"
           :emotion="chat.emotion"
           :expression-map="chat.character?.expressionMap ?? null"
+          :motion-map="chat.character?.motionMap ?? null"
+          :interaction-state="interactionState"
         />
         <div class="character-caption">
           <p class="eyebrow">A LITTLE COMPANY, EVERY DAY</p>
@@ -285,7 +325,7 @@ async function deleteCharacter() {
           <span
             >●
             {{
-              chat.busy ? "กำลังคิดคำตอบ…" : "พร้อมรับฟังเรื่องราวของคุณ"
+              interactionLabel[interactionState]
             }}</span
           ><span>{{ chat.character?.modelPath ? "LIVE2D MODE" : "TEXT MODE" }}</span>
         </div>
@@ -328,6 +368,15 @@ async function deleteCharacter() {
                 }}</small>
               </div>
               <div class="bubble">{{ m.content }}</div>
+              <button
+                v-if="m.role === 'assistant' && m.status === 'complete'"
+                class="message-read"
+                type="button"
+                :disabled="voice.active || chat.busy"
+                @click="voice.replay(m.content)"
+              >
+                ▶ อ่านคำตอบนี้
+              </button>
               <small v-if="m.status === 'interrupted'" class="muted"
                 >คำตอบนี้ถูกหยุดก่อนจบ</small
               >
@@ -468,8 +517,14 @@ async function deleteCharacter() {
               placeholder='{"happy":"smile","shy":"blush"}'
             />
           </label>
+          <label
+            >Emotion / state → Motion (JSON)<textarea
+              v-model="form.motionMap"
+              placeholder='{"happy":{"group":"TapBody","index":0},"listening":{"group":"Idle","index":0}}'
+            />
+          </label>
           <p class="muted small">
-            ชื่อ Expression ต้องตรงกับโมเดลจริง ดูวิธีติดตั้ง Cubism Core
+            ชื่อ Expression และ motion group ต้องตรงกับโมเดลจริง ดูวิธีติดตั้ง Cubism Core
             และโมเดลใน README
           </p>
           <p v-if="chat.error" class="error">{{ chat.error }}</p>

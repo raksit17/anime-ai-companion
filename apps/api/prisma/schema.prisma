@@ -13,6 +13,7 @@ model Character {
  systemPrompt String @db.Text
  modelPath String?
  expressionMap Json?
+ motionMap Json?
  conversations Conversation[]
  memories Memory[]
  createdAt DateTime @default(now())

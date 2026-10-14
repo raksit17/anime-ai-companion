@@ -1,4 +1,5 @@
 import * as PIXI from "pixi.js";
+<<<<<<< HEAD
 
 export type Live2DViewerHandle = {
   setMouthOpen(value: number): void;
@@ -7,6 +8,9 @@ export type Live2DViewerHandle = {
 };
 
 type CubismR5Module = typeof import("pixi-live2d5");
+=======
+import type { MotionMap } from "@companion/contracts";
+>>>>>>> origin/feature/emotional-live2d-chat
 let corePromise: Promise<void> | undefined;
 let rendererPromise: Promise<CubismR5Module> | undefined;
 
@@ -206,4 +210,78 @@ export async function createViewer(
     dispose();
     throw error;
   }
+<<<<<<< HEAD
+=======
+  const fit = () => {
+    model.scale.set(1);
+    const scale =
+      Math.min(
+        host.clientWidth / model.width,
+        host.clientHeight / model.height,
+      ) * 0.94;
+    model.scale.set(scale);
+    model.anchor.set(0.5, 1);
+    model.position.set(host.clientWidth / 2, host.clientHeight);
+  };
+  fit();
+  const observer = new ResizeObserver(fit);
+  observer.observe(host);
+  let mouth = 0;
+  const lipIds: string[] =
+    model.internalModel.settings.getLipSyncParameters?.() ?? [];
+  const ids = lipIds.length ? lipIds : ["ParamMouthOpenY"];
+  const applyMouth = () => {
+    for (const id of ids)
+      model.internalModel.coreModel.setParameterValueById(id, mouth);
+  };
+  model.internalModel.on("beforeModelUpdate", applyMouth);
+
+  let animationRevision = 0;
+  let animationQueue = Promise.resolve();
+  function enqueueAnimation(action: (revision: number) => Promise<void>) {
+    const revision = ++animationRevision;
+    const task = animationQueue.then(async () => {
+      if (revision === animationRevision) await action(revision);
+    });
+    animationQueue = task.catch(() => {});
+    return task;
+  }
+  async function runMotion(mapping: MotionMap[string] | undefined) {
+    if (!mapping?.group?.trim()) return;
+    const played = await model.motion(mapping.group, mapping.index);
+    if (!played)
+      console.warn(
+        `Live2D motion not found: ${mapping.group}[${mapping.index ?? "random"}]`,
+      );
+  }
+  function playMotion(mapping: MotionMap[string] | undefined) {
+    return enqueueAnimation(() => runMotion(mapping));
+  }
+  return {
+    setMouthOpen(value: number) {
+      mouth = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+    },
+    setEmotion(
+      name: string,
+      expressions: Record<string, string>,
+      motions: MotionMap,
+    ) {
+      const expression = expressions[name] ?? expressions.neutral;
+      return enqueueAnimation(async (revision) => {
+        if (expression) {
+          const applied = await model.expression(expression);
+          if (!applied)
+            throw new Error(`Live2D expression not found: ${expression}`);
+        }
+        if (revision === animationRevision) await runMotion(motions[name]);
+      });
+    },
+    destroy() {
+      animationRevision++;
+      model.internalModel.off("beforeModelUpdate", applyMouth);
+      observer.disconnect();
+      app.destroy(false, { children: true, texture: true, baseTexture: true });
+    },
+  };
+>>>>>>> origin/feature/emotional-live2d-chat
 }

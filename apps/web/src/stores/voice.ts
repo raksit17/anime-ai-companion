@@ -24,6 +24,8 @@ export const useVoice = defineStore("voice", () => {
   const chat = useChat(),
     recorder = useVoiceRecorder(),
     playback = useVoicePlayback();
+  const autoSpeak = ref(localStorage.getItem("companion-auto-speak") === "true");
+  watch(autoSpeak, (value) => localStorage.setItem("companion-auto-speak", String(value)));
   const state = ref<VoiceState>("idle"),
     error = ref(""),
     transcript = ref(""),
@@ -135,11 +137,13 @@ export const useVoice = defineStore("voice", () => {
       fail(e, token);
     }
   }
-  async function replay() {
+  async function replay(content?: string) {
     if (active.value || chat.busy) return;
-    const reply = [...chat.messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && m.status === "complete");
+    const reply = content
+      ? { content }
+      : [...chat.messages]
+          .reverse()
+          .find((m) => m.role === "assistant" && m.status === "complete");
     if (!reply) return;
     const token = ++generation;
     controller = new AbortController();
@@ -172,6 +176,7 @@ export const useVoice = defineStore("voice", () => {
   }
   return {
     state,
+    autoSpeak,
     error,
     transcript,
     seconds,

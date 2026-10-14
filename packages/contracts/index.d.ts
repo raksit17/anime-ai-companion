@@ -1,5 +1,11 @@
 export type Emotion =
   "neutral" | "happy" | "angry" | "shy" | "sad" | "surprised";
+export interface MotionMapping {
+  group: string;
+  index?: number;
+}
+export type MotionMap = Record<string, MotionMapping>;
+export type CharacterState = "idle" | "listening" | "thinking" | "responding" | "speaking";
 export interface Character {
   id: string;
   name: string;
@@ -7,6 +13,7 @@ export interface Character {
   systemPrompt: string;
   modelPath: string | null;
   expressionMap: Record<string, string> | null;
+  motionMap: MotionMap | null;
 }
 export interface Message {
   id: string;

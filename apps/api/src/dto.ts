@@ -20,6 +20,8 @@ export class CharacterDto {
   @Matches(/^\/live2d\/[^?#]*\.model3\.json$/)
   modelPath?: string;
   @IsOptional() @IsObject() expressionMap?: Record<string, string>;
+  @IsOptional() @IsObject()
+  motionMap?: Record<string, { group: string; index?: number }>;
 }
 export class MemoryDto {
   @IsString() @IsNotEmpty() @MaxLength(1000) content!: string;
