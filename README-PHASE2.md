@@ -158,9 +158,9 @@ apps/web/public/live2d/models/yuna/yuna.model3.json
 ```
 
 เพิ่ม path ในการตั้งค่าตัวละคร `/live2d/models/yuna/yuna.model3.json`
-viewer ใช้ renderer เดิม `pixi-live2d-display@0.4.0` + `pixi.js@6.5.10`
+**อัปเดต Phase 3:** Renderer ถูกย้ายไป PixiJS 8 + Cubism R5/Core 6.0.1 แล้ว ดู [คู่มือติดตั้งใหม่](docs/LIVE2D-R5.md) ก่อนใช้งาน
 
-Lip Sync อ่านค่าจาก LipSync group ของโมเดล ถ้าไม่มีกลุ่มจะใช้ `ParamMouthOpenY` โมเดลต้องมี parameter จริง
+Lip Sync อ่านค่าจาก LipSync group ของโมเดล โปรเจกต์รุ่นใหม่ต้องระบุ LipSync group ใน `model3.json` (Mao ใช้ `ParamA`) จึงจะขยับปากตามเสียง
 อัปเดตค่าหลัง motion/physics และก่อน core model update จึงไม่ถูก animation ทับทันที
 เมื่อเล่นเสียงจบหรือกด Stop ค่า RMS และค่าปากกลับเป็น 0
 นี่คือ volume-driven lip sync ไม่ใช่ phoneme/viseme alignment

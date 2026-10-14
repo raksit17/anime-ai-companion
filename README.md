@@ -16,6 +16,15 @@
 
 นี่คือ **Development Desktop**: ต้องเปิด backend และ AI services แยกกัน ยังไม่ bundle Python, PostgreSQL, Ollama หรือโมเดลลง installer
 
+## Live2D Cubism Core 6.0.1
+
+สำหรับโปรเจกต์ที่ใช้ Cubism SDK for Web R5 / Core 6.0.1 ให้ติดตั้ง Renderer
+PixiJS 8 และ shader ตามคู่มือ [Live2D R5](docs/LIVE2D-R5.md) ก่อนเปิด
+หน้า Chat หรือ Tauri Companion (ต้องใช้ Git + Bun + SDK R5 ที่ดาวน์โหลดเอง)
+
+**หลังอัปเกรด dependencies:** รัน `npm install` เพื่อสร้าง lockfile ใหม่;
+`npm ci` กับ lockfile เดิมจะใช้ไม่ได้จนกว่าจะอัปเดต lockfile
+
 ## เริ่มต้นบน Windows
 
 ต้องมี Node.js 24 LTS, Python 3.11, Docker Desktop, Ollama, Rust stable 1.90+ แบบ MSVC, Microsoft C++ Build Tools (Desktop development with C++) และ WebView2 Runtime

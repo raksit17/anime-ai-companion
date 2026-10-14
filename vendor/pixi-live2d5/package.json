@@ -1,0 +1,25 @@
+{
+  "name": "pixi-live2d5",
+  "version": "0.5.0-beta.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.es.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/index.es.js",
+      "require": "./dist/index.cjs"
+    },
+    "./cubism5": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/cubism5.es.js",
+      "require": "./dist/cubism5.cjs"
+    }
+  },
+  "peerDependencies": {
+    "pixi.js": "^8.21.0"
+  }
+}
