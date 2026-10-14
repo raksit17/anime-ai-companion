@@ -1,0 +1,54 @@
+generator client {
+ provider = "prisma-client"
+ output = "../src/generated/prisma"
+ moduleFormat = "cjs"
+}
+datasource db {
+ provider = "postgresql"
+}
+model Character {
+ id String @id @default(cuid())
+ name String
+ personality String @db.Text
+ systemPrompt String @db.Text
+ modelPath String?
+ expressionMap Json?
+ conversations Conversation[]
+ memories Memory[]
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+}
+model Conversation {
+ id String @id @default(cuid())
+ title String?
+ characterId String
+ character Character @relation(fields:[characterId],references:[id],onDelete:Cascade)
+ messages Message[]
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ @@index([characterId,updatedAt])
+}
+model Message {
+ id String @id @default(cuid())
+ conversationId String
+ conversation Conversation @relation(fields:[conversationId],references:[id],onDelete:Cascade)
+ role String
+ content String @db.Text
+ emotion String?
+ status String @default("complete")
+ requestId String?
+ createdAt DateTime @default(now())
+ @@unique([conversationId,requestId,role])
+ @@index([conversationId,createdAt])
+}
+model Memory {
+ id String @id @default(cuid())
+ characterId String
+ character Character @relation(fields:[characterId],references:[id],onDelete:Cascade)
+ content String @db.Text
+ importance Int @default(1)
+ source String @default("manual")
+ createdAt DateTime @default(now())
+ updatedAt DateTime @updatedAt
+ @@index([characterId,importance])
+}

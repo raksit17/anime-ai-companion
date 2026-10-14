@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.venv/
+__pycache__/
+apps/api/src/generated/
+apps/web/public/live2d/core/*
+apps/web/public/live2d/models/*
+!**/.gitkeep
+
+.venv*/
+.pytest_cache/
+storage/voices/**/*.wav
+
+# Native build artifacts
+apps/web/src-tauri/target/
+apps/web/src-tauri/gen/

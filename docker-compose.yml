@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: anime
+      POSTGRES_PASSWORD: anime_dev_password
+      POSTGRES_DB: anime_companion
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anime -d anime_companion"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  voice:
+    build: ./apps/voice
+    profiles: ["voice"]
+    environment:
+      TTS_ENGINE: pythaitts
+      STT_MODEL: small
+      STT_COMPUTE: int8
+    volumes: ["voice_models:/root/.cache"]
+    ports: ["127.0.0.1:8000:8000"]
+volumes:
+  pgdata:
+  voice_models:
