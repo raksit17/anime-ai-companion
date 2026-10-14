@@ -15,3 +15,13 @@ storage/voices/**/*.wav
 # Native build artifacts
 apps/web/src-tauri/target/
 apps/web/src-tauri/gen/
+
+# Cubism R5 renderer is built locally from a pinned MIT source checkout.
+vendor/.source/
+vendor/pixi-live2d5/dist/
+vendor/pixi-live2d5/types/
+
+# Cubism Core and GLSL assets remain untracked under Live2D SDK terms.
+apps/web/public/cubism5/shaders/*
+!apps/web/public/cubism5/shaders/.gitkeep
+

@@ -287,7 +287,7 @@ async function deleteCharacter() {
             {{
               chat.busy ? "กำลังคิดคำตอบ…" : "พร้อมรับฟังเรื่องราวของคุณ"
             }}</span
-          ><span>TEXT MODE</span>
+          ><span>{{ chat.character?.modelPath ? "LIVE2D MODE" : "TEXT MODE" }}</span>
         </div>
       </main>
       <section class="chat-panel">

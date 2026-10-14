@@ -18,7 +18,8 @@
     "build": "npm run build -w apps/api && npm run build -w apps/web",
     "test": "npm run test -w apps/api && npm run test -w apps/web",
     "desktop:dev": "npm run tauri:dev -w apps/web",
-    "desktop:build": "npm run tauri:build -w apps/web"
+    "desktop:build": "npm run tauri:build -w apps/web",
+    "live2d:setup": "node scripts/setup-live2d-r5.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.0",

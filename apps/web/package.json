@@ -8,15 +8,16 @@
     "build": "vue-tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "live2d:setup": "node ../../scripts/setup-live2d-r5.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",
     "pinia": "^3.0.0",
-    "pixi-live2d-display": "0.4.0",
-    "pixi.js": "6.5.10",
+    "pixi.js": "^8.21.0",
     "socket.io-client": "^4.8.1",
-    "vue": "^3.5.0"
+    "vue": "^3.5.0",
+    "pixi-live2d5": "file:../../vendor/pixi-live2d5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.2",
