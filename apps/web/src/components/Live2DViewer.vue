@@ -55,7 +55,7 @@ watch(
       viewer = next;
       await next.emotion(props.emotion, props.expressionMap ?? {});
       next.setMouthOpen(props.mouthOpen ?? 0);
-      if (status.value !== "error") status.value = "ready";
+      if (!error.value) status.value = "ready";
     } catch (cause) {
       if (token === generation && !active.signal.aborted) {
         error.value = cause instanceof Error ? cause.message : String(cause);

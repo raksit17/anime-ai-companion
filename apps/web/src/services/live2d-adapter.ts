@@ -61,9 +61,12 @@ function aborted(signal?: AbortSignal) {
 }
 
 function waitForShaderReady(
-  internal: { shaderState?: string; shaderError?: Error },
+  internal: object,
   signal?: AbortSignal,
 ): Promise<void> {
+  // The renderer exposes InternalModel in its public type declarations,
+  // while Cubism5InternalModel has these R5-specific fields at runtime.
+  const shader = internal as { shaderState?: string; shaderError?: Error };
   return new Promise((resolve, reject) => {
     const started = performance.now();
     let frame = 0;
@@ -79,9 +82,9 @@ function waitForShaderReady(
     const cancel = () => finish(new DOMException("Live2D load cancelled", "AbortError"));
     const poll = () => {
       if (signal?.aborted) return cancel();
-      if (internal.shaderState === "ready") return finish();
-      if (internal.shaderState === "error") {
-        return finish(internal.shaderError ?? new Error("Cubism R5 shader failed"));
+      if (shader.shaderState === "ready") return finish();
+      if (shader.shaderState === "error") {
+        return finish(shader.shaderError ?? new Error("Cubism R5 shader failed"));
       }
       if (performance.now() - started > 35_000) {
         return finish(new Error("รอ Cubism R5 shaders นานเกิน 35 วินาที: ตรวจ /cubism5/shaders/"));
@@ -160,8 +163,11 @@ export async function createViewer(
     let mouth = 0;
     // R5 stores CubismIdHandle objects in the motion manager, not plain string IDs.
     const lipIds = (internal.motionManager as { lipSyncIds?: unknown[] }).lipSyncIds ?? [];
+    const coreModel = internal.coreModel as {
+      setParameterValueById(id: unknown, value: number): void;
+    };
     onMouth = () => {
-      for (const id of lipIds) internal.coreModel.setParameterValueById(id, mouth);
+      for (const id of lipIds) coreModel.setParameterValueById(id, mouth);
     };
     internal.on("beforeModelUpdate", onMouth);
 
