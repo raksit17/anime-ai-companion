@@ -11,25 +11,29 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { Database } from "./database";
+import { localAiEnabled } from "./ai/localai.service";
 import { CharacterDto, MemoryDto, ConversationDto } from "./dto";
 @Controller("v1")
 export class ApiController {
   constructor(@Inject(Database) private db: Database) {}
   @Get("health") async health() {
     await this.db.$queryRaw`SELECT 1`;
-    let ollama = "offline";
+    const provider = localAiEnabled() ? "localai" : "ollama";
+    const model = localAiEnabled() ? (process.env.LOCALAI_CHAT_MODEL ?? "qwen3-4b") : (process.env.OLLAMA_MODEL ?? "qwen3.5:4b-q4_K_M");
+    let status = "offline";
     try {
-      const r = await fetch(`${process.env.OLLAMA_URL}/api/tags`, {
+      const url = localAiEnabled()
+        ? (process.env.LOCALAI_URL ?? "http://127.0.0.1:8080") + "/v1/models"
+        : (process.env.OLLAMA_URL ?? "http://127.0.0.1:11434") + "/api/tags";
+      const response = await fetch(url, {
+        headers: localAiEnabled() && process.env.LOCALAI_API_KEY ? { Authorization: `Bearer ${process.env.LOCALAI_API_KEY}` } : {},
         signal: AbortSignal.timeout(2500),
       });
-      if (r.ok) ollama = "online";
+      if (response.ok) status = "online";
     } catch {}
-    return {
-      status: "ok",
-      database: "online",
-      ollama,
-      model: process.env.OLLAMA_MODEL,
-    };
+    return { status: "ok", database: "online", provider, model,
+      ollama: provider === "ollama" ? status : "not selected",
+      localai: provider === "localai" ? status : "not selected" };
   }
   @Get("characters") characters() {
     return this.db.character.findMany({ orderBy: { createdAt: "asc" } });
