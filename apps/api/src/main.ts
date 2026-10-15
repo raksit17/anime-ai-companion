@@ -17,6 +17,8 @@ import { Database } from "./database";
 import { ApiController } from "./api.controller";
 import { ChatGateway } from "./chat.gateway";
 import { OllamaService } from "./ai/ollama.service";
+import { LocalAiModule } from "./ai/localai.module";
+import { VisionModule } from "./modules/vision/vision.module";
 @Catch()
 class ApiErrors implements ExceptionFilter {
   catch(e: any, host: ArgumentsHost) {
@@ -38,7 +40,7 @@ class ApiErrors implements ExceptionFilter {
   }
 }
 @Module({
-  imports: [ResourceModule, VoiceModule],
+  imports: [ResourceModule, LocalAiModule, VoiceModule, VisionModule],
   controllers: [ApiController, RuntimeController],
   providers: [Database, ChatGateway, OllamaService],
 })

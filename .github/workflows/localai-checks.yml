@@ -1,0 +1,33 @@
+name: LocalAI multimodal checks
+
+on:
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - "apps/web/**"
+      - "packages/contracts/**"
+      - "package*.json"
+      - ".github/workflows/localai-checks.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://anime:anime_dev_password@127.0.0.1:5433/anime_companion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run generate
+      - run: npm run build -w apps/api
+      - run: npm run test -w apps/api
+      - run: npm run test -w apps/web
+      - name: Typecheck new Vue Vision UI (without proprietary Live2D renderer)
+        run: ./node_modules/.bin/vue-tsc -p apps/web/tsconfig.vision.json --noEmit
+      - name: Full web build (requires separately installed Live2D renderer)
+        if: ${{ hashFiles('vendor/pixi-live2d5/dist/index.es.js') != '' }}
+        run: npm run build -w apps/web

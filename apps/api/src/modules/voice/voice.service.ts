@@ -6,6 +6,7 @@ import {
   Inject,
 } from "@nestjs/common";
 import { ResourceGate } from "../../resources";
+import { LocalAiService, localAiVoiceEnabled } from "../../ai/localai.service";
 export const AUDIO_TYPES = new Set([
   "audio/webm",
   "video/webm",
@@ -18,7 +19,7 @@ export const AUDIO_TYPES = new Set([
 ]);
 @Injectable()
 export class VoiceService {
-  constructor(@Inject(ResourceGate) private gate: ResourceGate) {}
+  constructor(@Inject(ResourceGate) private gate: ResourceGate, @Inject(LocalAiService) private localai: LocalAiService) {}
   private base = process.env.VOICE_SERVICE_URL ?? "http://127.0.0.1:8000";
   private async request(
     path: string,
@@ -77,6 +78,12 @@ export class VoiceService {
     }
   }
   async health(signal: AbortSignal) {
+    if (localAiVoiceEnabled()) {
+      const models = await this.localai.models(signal);
+      const stt = models.includes(process.env.LOCALAI_STT_MODEL ?? "whisper-1");
+      const tts = models.includes(process.env.LOCALAI_TTS_MODEL ?? "tts-1");
+      return { status: stt && tts ? "ok" : "degraded", tts_engine: "localai", tts_languages: ["th", "en", "ja"], model_state: tts ? "ready" : "missing", stt_available: stt, tts_available: tts };
+    }
     return (await this.request("/health", {}, signal)).json();
   }
   async transcribe(
@@ -85,6 +92,11 @@ export class VoiceService {
     language: string,
     signal: AbortSignal,
   ) {
+    if (localAiVoiceEnabled()) {
+      const release = await this.gate.acquire(signal);
+      try { return await this.localai.transcribe(audio, mime, language, signal); }
+      finally { release(); }
+    }
     const form = new FormData();
     const extension = mime.includes("mp4")
       ? "mp4"
@@ -116,6 +128,7 @@ export class VoiceService {
   ): Promise<Buffer> {
     const release = await this.gate.acquire(signal);
     try {
+      if (localAiVoiceEnabled()) return await this.localai.synthesize(text, signal);
       const status = (await this.health(signal)) as any;
       if (status.tts_engine === "voxcpm2") {
         const response = await fetch(

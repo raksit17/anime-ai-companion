@@ -13,6 +13,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 15
+  localai:
+    image: localai/localai:latest
+    profiles: ["localai"]
+    restart: unless-stopped
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["localai_models:/models"]
+    environment:
+      MODELS_PATH: /models
   voice:
     build: ./apps/voice
     profiles: ["voice"]
@@ -25,3 +33,4 @@ services:
 volumes:
   pgdata:
   voice_models:
+  localai_models:
