@@ -1,6 +1,8 @@
-# Anime AI Companion — Phase 3
+# Anime AI Companion — Phase 3 + optional Phase 4 LocalAI
 
 โปรเจกต์เต็ม Phase 1 + 2 + 3: Windows Desktop Companion ด้วย Tauri 2
+
+**ใหม่: [คู่มือ LocalAI Multimodal — Chat + Vision + Voice](docs/LOCALAI-MULTIMODAL.md)** — ใช้ LocalAI แทน Ollama/FastAPI ได้แบบเลือกเปิด โดยยังคง Live2D, ความจำ และฐานข้อมูลเดิม
 
 ## สิ่งที่เพิ่ม
 

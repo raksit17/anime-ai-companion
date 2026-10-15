@@ -83,7 +83,7 @@ async function capture() {
     const snapshot = new File([blob], "camera.jpg", { type: "image/jpeg" });
     busy.value = false;
     // Stop video tracks immediately after one explicit snapshot.
-    stream.getTracks().forEach(track => track.stop());
+    stream?.getTracks().forEach(track => track.stop());
     stream = undefined;
     await sendImage(snapshot);
   } catch (e) {

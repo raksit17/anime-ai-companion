@@ -19,7 +19,7 @@ export class VisionController {
     limits: { fileSize: 4 * 1024 * 1024, files: 1, fields: 1 },
   }))
   async analyze(@UploadedFile() file: Express.Multer.File, @Body() dto: VisionDto, @Res({ passthrough: true }) res: Response) {
-    const mime = file?.mimetype?.split(";")[0]?.toLowerCase();
+    const mime = file?.mimetype?.split(";")[0]?.toLowerCase() ?? "";
     if (!file?.size || !["image/jpeg", "image/png", "image/webp"].includes(mime))
       throw new BadRequestException("Upload a JPEG, PNG or WebP image (max 4 MB)");
     // Verify image signature rather than trusting browser-controlled MIME.
