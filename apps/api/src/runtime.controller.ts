@@ -20,7 +20,7 @@ export class RuntimeController {
   constructor(@Inject(Database) private db: Database) {}
   @Get("health") async health() {
     const url = (process.env.LOCALAI_URL ?? "http://127.0.0.1:8080") + "/v1/models";
-    const headers = process.env.LOCALAI_API_KEY ? { Authorization: `Bearer ${process.env.LOCALAI_API_KEY}` } : {};
+    const headers: Record<string, string> = process.env.LOCALAI_API_KEY ? { Authorization: `Bearer ${process.env.LOCALAI_API_KEY}` } : {};
     const [database, ollama, localai, voice] = await Promise.all([
       probe(() => this.db.$queryRawUnsafe("SELECT 1")),
       probe(() =>
