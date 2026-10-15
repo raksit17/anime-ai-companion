@@ -16,6 +16,8 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://anime:anime_dev_password@127.0.0.1:5433/anime_companion
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
