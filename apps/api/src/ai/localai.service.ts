@@ -26,7 +26,7 @@ export async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerato
       while ((pos = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, pos);
         buffer = buffer.slice(pos + 1);
-        if (line === "") {
+        if (line.trim() === "") {
           if (lines.length) {
             const event = lines.join("\n");
             lines = [];

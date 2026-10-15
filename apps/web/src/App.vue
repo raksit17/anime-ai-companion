@@ -2,6 +2,7 @@
 import DesktopSettings from "./components/DesktopSettings.vue";
 import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";
+import VisionControls from "./components/VisionControls.vue";
 import { useVoice } from "./stores/voice";
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { useChat } from "./stores/chat";
@@ -235,7 +236,7 @@ async function deleteCharacter() {
         <div class="system-card">
           <span class="eyebrow">ON YOUR MACHINE</span>
           <p>
-            Ollama <strong>{{ chat.health?.ollama ?? "unknown" }}</strong>
+            {{ chat.health?.provider === "localai" ? "LocalAI" : "Ollama" }} <strong>{{ chat.health?.provider === "localai" ? chat.health?.localai : (chat.health?.ollama ?? "unknown") }}</strong>
           </p>
           <p>
             PostgreSQL <strong>{{ chat.health?.database ?? "unknown" }}</strong>
@@ -340,6 +341,7 @@ async function deleteCharacter() {
             </article>
           </div>
           <VoiceControls />
+          <VisionControls />
           <form class="composer" @submit.prevent="send">
             <textarea
               v-model="text"
