@@ -55,7 +55,7 @@ onBeforeUnmount(() => void voice.dispose());
         </select></label
       >
     </div>
-    <div v-if="voice.health?.tts_engine === 'moss'" class="voice-settings">
+    <div v-if="voice.health?.tts_engine === 'moss'" class="voice-settings moss-settings">
       <label>เสียงตัวละครจาก MOSS Voice Studio
         <select v-model="voice.voiceId" :disabled="voice.active || chat.busy">
           <option value="">เสียง MOSS มาตรฐาน / ค่าเริ่มต้นของเซิร์ฟเวอร์</option>
