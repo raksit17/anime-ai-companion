@@ -96,8 +96,8 @@ onBeforeUnmount(() => clearInterval(timer));
         {{ name }}: <strong>{{ runtime[name]?.status ?? "unknown" }}</strong>
       </p>
       <p class="muted small">
-        เปิด NestJS, PostgreSQL, Ollama และ FastAPI แยกกัน
-        แอปไม่เปิดบริการให้อัตโนมัติ
+        เปิด NestJS, PostgreSQL, Ollama และบริการเสียงแยกกัน
+        โหมด MOSS ยังใช้ FastAPI เดิมสำหรับไมโครโฟน (STT) · แอปไม่เปิดบริการให้อัตโนมัติ
       </p>
       <button @click="refresh" :disabled="loading">ตรวจใหม่</button>
       <template v-if="desktop"
