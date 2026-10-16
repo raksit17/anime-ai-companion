@@ -4,12 +4,14 @@ import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";
 import VisionControls from "./components/VisionControls.vue";
 import { useVoice } from "./stores/voice";
+import { useAnimation } from "./stores/animation";
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { useChat } from "./stores/chat";
 import { api } from "./api";
 import Live2DViewer from "./components/Live2DViewer.vue";
 import type { Character } from "@companion/contracts";
 const voice = useVoice();
+const animation = useAnimation();
 const chat = useChat(),
   text = ref(""),
   tab = ref("chat"),
@@ -55,6 +57,8 @@ onMounted(async () => {
         voiceState: voice.state,
         connected: chat.connected,
         busy: chat.busy,
+        animation: animation.timeline,
+        motion: animation.motion,
       };
       const json = JSON.stringify(snapshot);
       if (json === last) return;
@@ -75,6 +79,7 @@ onBeforeUnmount(() => {
   clearInterval(mirrorTimer);
   stopListener?.();
   voice.cancel();
+  animation.cancel();
   chat.stop();
 });
 watch(
@@ -269,7 +274,8 @@ async function deleteCharacter() {
           :mouth-open="voice.mouthOpen"
           :key="chat.character?.id"
           :model-path="chat.character?.modelPath ?? null"
-          :emotion="chat.emotion"
+          :emotion="animation.timeline.phase !== 'idle' ? animation.emotion : chat.emotion"
+          :motion="animation.motion"
           :expression-map="chat.character?.expressionMap ?? null"
         />
         <div class="character-caption">
