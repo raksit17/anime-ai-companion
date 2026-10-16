@@ -52,7 +52,7 @@ onMounted(async () => {
         name: chat.character?.name ?? "Komorebi",
         modelPath: chat.character?.modelPath ?? null,
         expressionMap: chat.character?.expressionMap ?? null,
-        emotion: chat.emotion,
+        emotion: animation.timeline.phase !== "idle" ? animation.emotion : chat.emotion,
         mouthOpen: voice.mouthOpen,
         voiceState: voice.state,
         connected: chat.connected,
