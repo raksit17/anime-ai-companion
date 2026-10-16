@@ -2,6 +2,7 @@ import * as PIXI from "pixi.js";
 
 export type Live2DViewerHandle = {
   setMouthOpen(value: number): void;
+  playMotion(group:string,index:number):Promise<void>;
   emotion(name: string, map: Record<string, string>): Promise<void>;
   destroy(): void;
 };
@@ -199,6 +200,11 @@ export async function createViewer(
       async emotion(name, map) {
         const expression = map[name];
         if (expression) await loadedModel.expression(expression);
+      },
+      async playMotion(group,index) {
+        const settings = internal.settings as {motions?:Record<string,unknown[]>};
+        if (!Number.isInteger(index) || index < 0 || index >= (settings.motions?.[group]?.length ?? 0)) return;
+        await Promise.resolve(loadedModel.motion(group,index));
       },
       destroy: dispose,
     };
