@@ -17,6 +17,7 @@ import { OllamaService } from "./ai/ollama.service";
 import { buildPrompt } from "./ai/prompt-builder";
 import { normalizeThaiFeminineEnding } from "./ai/text-style";
 import { SendDto } from "./dto";
+import { buildAnimationPlan } from "./animation/dialogue-parser";
 @WebSocketGateway({
   namespace: "/chat",
   cors: { origin: allowedOrigins() },
@@ -146,7 +147,8 @@ export class ChatGateway implements OnGatewayDisconnect {
         },
       });
       emit("chat:emotion", { emotion });
-      emit("chat:complete", { message, emotion });
+      const animationPlan = buildAnimationPlan(message.id, conv.characterId, content, emotion);
+      emit("chat:complete", { message: { ...message, animationPlan }, emotion });
     } catch (error) {
       if (savedUser && content) {
         try {
