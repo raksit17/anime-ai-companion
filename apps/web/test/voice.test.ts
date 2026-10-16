@@ -20,6 +20,7 @@ const f = vi.hoisted(() => ({
   stopPlayback: vi.fn(),
   transcribe: vi.fn(),
   synthesize: vi.fn(),
+  listVoices: vi.fn(),
 }));
 vi.mock("../src/stores/chat", () => ({ useChat: () => f.chat }));
 vi.mock("../src/composables/useVoiceRecorder", () => ({
@@ -38,6 +39,7 @@ vi.mock("../src/services/voice.api", () => ({
   transcribe: f.transcribe,
   synthesize: f.synthesize,
   voiceHealth: vi.fn(),
+  listVoices: f.listVoices,
 }));
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -53,6 +55,7 @@ beforeEach(() => {
   });
   f.chat.sendAndWait.mockResolvedValue({ content: "พักสักหน่อยนะ" });
   f.synthesize.mockResolvedValue(new Blob(["wav"]));
+  f.listVoices.mockResolvedValue({ items: [] });
   f.play.mockResolvedValue(undefined);
 });
 it("voice pipeline transcribes, uses the existing chat, then plays once", async () => {
@@ -66,6 +69,7 @@ it("voice pipeline transcribes, uses the existing chat, then plays once", async 
     expect.any(AbortSignal),
   );
   expect(f.play).toHaveBeenCalledTimes(1);
+  expect(f.synthesize).toHaveBeenCalledWith("พักสักหน่อยนะ", "th", expect.any(AbortSignal), undefined);
 });
 it("late STT after cancellation never sends a chat or plays audio", async () => {
   let resolve!: (value: any) => void;
