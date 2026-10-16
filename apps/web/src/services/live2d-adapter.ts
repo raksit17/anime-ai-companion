@@ -1,4 +1,5 @@
 import * as PIXI from "pixi.js";
+import { inspectCapabilities, allowedMotion } from "../animation/motion-capabilities";
 
 export type Live2DViewerHandle = {
   setMouthOpen(value: number): void;
@@ -203,7 +204,9 @@ export async function createViewer(
       },
       async playMotion(group,index) {
         const settings = internal.settings as {motions?:Record<string,unknown[]>};
-        if (!Number.isInteger(index) || index < 0 || index >= (settings.motions?.[group]?.length ?? 0)) return;
+        // Only explicitly approved motion mappings may run; model groups by themselves have no known semantics.
+        const allowed = allowedMotion({id:"preview",type:"action",description:"",motion:{group,index}}, inspectCapabilities(settings), new Set());
+        if (!allowed) return;
         await Promise.resolve(loadedModel.motion(group,index));
       },
       destroy: dispose,
