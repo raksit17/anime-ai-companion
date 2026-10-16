@@ -10,6 +10,8 @@ export interface Snapshot {
   voiceState: string;
   connected: boolean;
   busy: boolean;
+  animation?: { messageId:string; segmentId:string|null; index:number; phase:string; revision:number };
+  motion?: { group:string; index:number; revision:number } | null;
 }
 export interface Envelope {
   revision: number;
