@@ -7,7 +7,9 @@ import {
   transcribe,
   synthesize,
   voiceHealth,
+  listVoices,
   type VoiceHealth,
+  type MossVoice,
 } from "../services/voice.api";
 import { speechChunks } from "../services/speech-chunks";
 export type VoiceState =
@@ -20,6 +22,12 @@ export type VoiceState =
   | "speaking"
   | "cancelled"
   | "error";
+function saved(key: string) {
+  return typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+}
+function remember(key: string, value: string) {
+  if (typeof localStorage !== "undefined") localStorage.setItem(key, value);
+}
 export const useVoice = defineStore("voice", () => {
   const chat = useChat(),
     recorder = useVoiceRecorder(),
@@ -31,6 +39,9 @@ export const useVoice = defineStore("voice", () => {
     sttLanguage = ref("auto"),
     ttsLanguage = ref("th"),
     health = ref<VoiceHealth | null>(null),
+    voices = ref<MossVoice[]>([]),
+    voiceId = ref(""),
+    autoSpeak = ref(saved("moss:autoSpeak") === "true"),
     progress = ref("");
   const active = computed(
     () => !["idle", "error", "cancelled"].includes(state.value),
@@ -58,6 +69,9 @@ export const useVoice = defineStore("voice", () => {
       health.value = await voiceHealth(AbortSignal.timeout(6000));
       if (!health.value.tts_languages.includes(ttsLanguage.value))
         ttsLanguage.value = health.value.tts_languages[0] ?? "th";
+      voices.value = health.value.tts_engine === "moss"
+        ? (await listVoices(AbortSignal.timeout(6000))).items
+        : [];
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
     }
@@ -78,7 +92,7 @@ export const useVoice = defineStore("voice", () => {
       if (token !== generation) return;
       state.value = "synthesizing";
       progress.value = `${i + 1} / ${chunks.length}`;
-      const wav = await synthesize(chunks[i]!, ttsLanguage.value, signal);
+      const wav = await synthesize(chunks[i]!, ttsLanguage.value, signal, voiceId.value || undefined);
       signal.throwIfAborted();
       if (token !== generation) return;
       state.value = "speaking";
@@ -154,6 +168,33 @@ export const useVoice = defineStore("voice", () => {
       fail(e, token);
     }
   }
+  async function speakText(text: string) {
+    if (active.value || chat.busy || !text.trim()) return;
+    const token = ++generation;
+    controller = new AbortController();
+    const signal = controller.signal;
+    error.value = "";
+    state.value = "synthesizing";
+    try {
+      await playback.unlock();
+      signal.throwIfAborted();
+      await speak(text, signal, token);
+    } catch (e) {
+      fail(e, token);
+    }
+  }
+  watch(() => chat.character?.id, (id) => {
+    voiceId.value = id ? (saved("moss:voice:" + id) ?? "") : "";
+  }, { immediate: true });
+  watch(voiceId, (id) => {
+    if (chat.character?.id) remember("moss:voice:" + chat.character.id, id);
+  });
+  watch(autoSpeak, (value) => remember("moss:autoSpeak", String(value)));
+  watch(() => chat.lastCompletedReply, (reply) => {
+    if (reply && autoSpeak.value && !active.value && chat.connected) {
+      void speakText(reply.content);
+    }
+  });
   watch(
     () => [chat.character?.id, chat.conversation],
     () => {
@@ -178,6 +219,9 @@ export const useVoice = defineStore("voice", () => {
     sttLanguage,
     ttsLanguage,
     health,
+    voices,
+    voiceId,
+    autoSpeak,
     progress,
     active,
     mouthOpen: playback.mouthOpen,
@@ -185,6 +229,7 @@ export const useVoice = defineStore("voice", () => {
     finish,
     cancel,
     replay,
+    speakText,
     checkHealth,
     dispose,
   };

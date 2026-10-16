@@ -6,6 +6,7 @@ import {
   Inject,
 } from "@nestjs/common";
 import { ResourceGate } from "../../resources";
+import { MossVoiceClient } from "./moss-voice.client";
 export const AUDIO_TYPES = new Set([
   "audio/webm",
   "video/webm",
@@ -18,7 +19,10 @@ export const AUDIO_TYPES = new Set([
 ]);
 @Injectable()
 export class VoiceService {
-  constructor(@Inject(ResourceGate) private gate: ResourceGate) {}
+  constructor(
+    @Inject(ResourceGate) private gate: ResourceGate,
+    @Inject(MossVoiceClient) private moss: MossVoiceClient,
+  ) {}
   private base = process.env.VOICE_SERVICE_URL ?? "http://127.0.0.1:8000";
   private async request(
     path: string,
@@ -76,8 +80,15 @@ export class VoiceService {
       throw error;
     }
   }
+  private useMoss() {
+    return process.env.VOICE_TTS_PROVIDER === "moss";
+  }
   async health(signal: AbortSignal) {
+    if (this.useMoss()) return this.moss.health(signal);
     return (await this.request("/health", {}, signal)).json();
+  }
+  async voices(signal: AbortSignal) {
+    return this.useMoss() ? this.moss.voices(signal) : { items: [] };
   }
   async transcribe(
     audio: Buffer,
@@ -113,9 +124,11 @@ export class VoiceService {
     text: string,
     language: string,
     signal: AbortSignal,
+    voiceId?: string,
   ): Promise<Buffer> {
     const release = await this.gate.acquire(signal);
     try {
+      if (this.useMoss()) return this.moss.synthesize(text, language, voiceId, signal);
       const status = (await this.health(signal)) as any;
       if (status.tts_engine === "voxcpm2") {
         const response = await fetch(

@@ -22,7 +22,8 @@ export const useChat = defineStore("chat", () => {
     partial = ref(""),
     error = ref(""),
     emotion = ref<Emotion>("neutral"),
-    health = ref<any>(null);
+    health = ref<any>(null),
+    lastCompletedReply = ref<Message | null>(null);
   let pending:
     | {
         id: string;
@@ -143,7 +144,10 @@ export const useChat = defineStore("chat", () => {
     });
     socket.on("chat:complete", (e: ChatEvent) => {
       if (!matches(e)) return;
-      if (e.message) settle(e.message);
+      if (e.message) {
+        lastCompletedReply.value = e.message;
+        settle(e.message);
+      }
       else settle(undefined, new Error("ไม่พบคำตอบจากแชต"));
       busy.value = false;
       partial.value = "";
@@ -244,6 +248,7 @@ export const useChat = defineStore("chat", () => {
     error,
     emotion,
     health,
+    lastCompletedReply,
     guard,
     init,
     selectCharacter,

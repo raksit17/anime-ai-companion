@@ -30,6 +30,9 @@ export class VoiceController {
   @Get("health") health() {
     return this.voice.health(AbortSignal.timeout(5000));
   }
+  @Get("voices") voices() {
+    return this.voice.voices(AbortSignal.timeout(5000));
+  }
   @Post("transcribe")
   @UseInterceptors(
     FileInterceptor("file", {
@@ -67,6 +70,7 @@ export class VoiceController {
         body.text.trim(),
         body.language,
         task.signal,
+        body.voiceId,
       );
       res.setHeader("Content-Type", "audio/wav");
       res.setHeader("Cache-Control", "no-store");

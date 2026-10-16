@@ -55,6 +55,24 @@ onBeforeUnmount(() => void voice.dispose());
         </select></label
       >
     </div>
+    <div v-if="voice.health?.tts_engine === 'moss'" class="voice-settings moss-settings">
+      <label>เสียงตัวละครจาก MOSS Voice Studio
+        <select v-model="voice.voiceId" :disabled="voice.active || chat.busy">
+          <option value="">เสียง MOSS มาตรฐาน / ค่าเริ่มต้นของเซิร์ฟเวอร์</option>
+          <option v-for="item in voice.voices" :key="item.id" :value="item.id">
+            {{ item.name }}{{ item.character ? ' (' + item.character + ')' : '' }} — {{ item.language }}
+          </option>
+        </select>
+      </label>
+      <small v-if="!voice.voices.length">ยังไม่มีเสียงโคลนใน Studio · เพิ่ม reference WAV ใน MOSS Voice Studio ก่อน แล้วกดตรวจบริการเสียงอีกครั้ง</small>
+      <small v-if="voice.voiceId && !voice.voices.some(item => item.id === voice.voiceId)" class="error">
+        ไม่พบ Voice ID ที่เคยเลือก กรุณาเลือกเสียงใหม่
+      </small>
+    </div>
+    <label class="voice-auto">
+      <input type="checkbox" v-model="voice.autoSpeak" :disabled="voice.active" />
+      อ่านคำตอบอัตโนมัติหลังส่งข้อความแชต (เสียงจากบริการที่เลือก)
+    </label>
     <div class="voice-actions">
       <button
         v-if="voice.state === 'listening'"

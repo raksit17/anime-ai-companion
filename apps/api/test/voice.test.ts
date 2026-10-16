@@ -17,11 +17,15 @@ const calls: any[] = [];
       provide: VoiceService,
       useValue: {
         health: async () => ({ status: "ok" }),
+        voices: async () => ({ items: [{ id: "sample", name: "Yuna" }] }),
         transcribe: async (_: any, mime: string, language: string) => {
           calls.push({ mime, language });
           return { text: "สวัสดี", language, duration: 1 };
         },
-        synthesize: async () => wav,
+        synthesize: async (_text: string, _lang: string, _signal: AbortSignal, voiceId?: string) => {
+          calls.push({ voiceId });
+          return wav;
+        },
       },
     },
   ],
@@ -80,14 +84,17 @@ test("voice HTTP validates multipart, language, empty text, maximum text and ret
       ).status,
       400,
     );
+    const voiceList = await fetch(base + "/v1/voice/voices");
+    assert.equal(((await voiceList.json()) as any).items[0].name, "Yuna");
     const audio = await fetch(base + "/v1/voice/synthesize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "สวัสดี", language: "th" }),
+      body: JSON.stringify({ text: "สวัสดี", language: "th", voiceId: "ecbc9bd0-5d09-4a87-b146-4af60e79c125" }),
     });
     assert.equal(audio.status, 201);
     assert.match(audio.headers.get("content-type") ?? "", /audio\/wav/);
     assert.equal((await audio.arrayBuffer()).byteLength, 44);
+    assert.deepEqual(calls.at(-1), { voiceId: "ecbc9bd0-5d09-4a87-b146-4af60e79c125" });
   } finally {
     await app.close();
   }

@@ -71,6 +71,14 @@ npm run desktop:dev
 Token สุ่มโดย `npm run setup`; อย่าใส่ใน VITE variables หรือ commit `.env` ส่วนหน้าเก็บ token ใน localStorage ของ origin นั้น ไม่ได้เข้ารหัส
 Web browser และ Desktop production ใช้คนละ origin จึงต้อง pair แยกกัน
 
+## เชื่อม MOSS Voice Studio (เสียงที่โคลนไว้)
+
+ระบบสามารถใช้เสียงที่สร้างจาก `raksit17/moss-voice-studio-starter` เป็น TTS ของตัวละครในแชตได้ โดย MOSS Studio ทำงานแยกที่พอร์ต 8001 และ NestJS ส่ง `voice_id` ไปสั่งสร้าง WAV พร้อมคง Live2D Lip Sync เดิม
+
+เพิ่ม `VOICE_TTS_PROVIDER=moss`, `VOICE_STUDIO_URL=http://127.0.0.1:8001`, `VOICE_STUDIO_API_KEY` ลง `apps/api/.env` แล้วเปิด MOSS Studio ก่อน Restart NestJS จากหน้าแชตเลือกเสียงของแต่ละตัวละคร แล้วกด **อ่านคำตอบล่าสุด** หรือเปิด **อ่านคำตอบอัตโนมัติ**
+
+**คำแนะนำการติดตั้งและข้อจำกัดทั้งหมด:** [MOSS Voice Studio Integration](docs/MOSS-VOICE-INTEGRATION.md) — ตัวโมเดลยังอยู่ใน Studio และ `apps/voice` พอร์ต 8000 ยังคงจำเป็นสำหรับ STT/ไมโครโฟน
+
 ## ใช้งาน
 
 เลือกตัวละคร/ห้อง แล้วส่งข้อความหรือกดเริ่มพูดในหน้าต่างแชต อนุญาตไมค์เมื่อระบบถาม

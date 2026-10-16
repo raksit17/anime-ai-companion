@@ -673,6 +673,32 @@ header {
   font-size: 10px;
   padding: 4px;
 }
+.moss-settings {
+  flex-direction: column;
+  gap: 6px;
+}
+.moss-settings label {
+  align-items: stretch;
+  flex-direction: column;
+  font-size: 10px;
+}
+.moss-settings select {
+  max-width: none;
+  width: 100%;
+}
+.voice-auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 11px;
+  font-size: 11px;
+}
+.voice-auto input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  flex: none;
+}
 .voice-actions {
   display: flex;
   gap: 7px;

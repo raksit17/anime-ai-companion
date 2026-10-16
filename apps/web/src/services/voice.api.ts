@@ -1,5 +1,6 @@
 import { authHeaders } from "./auth";
 import { base } from "../api";
+export interface MossVoice { id: string; name: string; language: string; character?: string; }
 export interface VoiceHealth {
   status: string;
   tts_engine: string;
@@ -34,6 +35,9 @@ async function request(
 export async function voiceHealth(signal: AbortSignal): Promise<VoiceHealth> {
   return (await request("/health", {}, signal)).json();
 }
+export async function listVoices(signal: AbortSignal): Promise<{ items: MossVoice[] }> {
+  return (await request("/voices", {}, signal)).json();
+}
 export async function transcribe(
   audio: Blob,
   language: string,
@@ -50,6 +54,7 @@ export async function synthesize(
   text: string,
   language: string,
   signal: AbortSignal,
+  voiceId?: string,
 ) {
   return (
     await request(
@@ -57,7 +62,7 @@ export async function synthesize(
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, language }),
+        body: JSON.stringify({ text, language, ...(voiceId ? { voiceId } : {}) }),
       },
       signal,
     )

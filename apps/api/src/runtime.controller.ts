@@ -9,8 +9,8 @@ export async function probe(check: () => Promise<unknown>) {
     return { status: "offline", latencyMs: Date.now() - start };
   }
 }
-async function http(url: string) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+async function http(url: string, headers?: HeadersInit) {
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(3000) });
   if (!response.ok) throw new Error("offline");
   await response.arrayBuffer();
 }
@@ -26,10 +26,14 @@ export class RuntimeController {
         ),
       ),
       probe(() =>
-        http(
-          (process.env.VOICE_SERVICE_URL ?? "http://127.0.0.1:8000") +
-            "/health",
-        ),
+        process.env.VOICE_TTS_PROVIDER === "moss"
+          ? http(
+              (process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001").replace(/[/]$/, "") + "/v1/health",
+              { "X-API-Key": process.env.VOICE_STUDIO_API_KEY ?? "" },
+            )
+          : http(
+              (process.env.VOICE_SERVICE_URL ?? "http://127.0.0.1:8000") + "/health",
+            ),
       ),
     ]);
     return {
