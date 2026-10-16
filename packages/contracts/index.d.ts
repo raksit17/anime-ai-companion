@@ -15,6 +15,7 @@ export interface Message {
   emotion: Emotion | null;
   status: string;
   createdAt: string;
+  animationPlan?: AnimationPlanV1;
 }
 export interface Conversation {
   id: string;
@@ -38,6 +39,7 @@ export interface ChatEvent {
   delta?: string;
   emotion?: Emotion;
   message?: Message;
+  animationPlan?: AnimationPlanV1;
   error?: string;
 }
 
