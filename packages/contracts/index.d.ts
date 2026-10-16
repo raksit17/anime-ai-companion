@@ -40,3 +40,13 @@ export interface ChatEvent {
   message?: Message;
   error?: string;
 }
+
+export type AnimationSegment =
+  | { id: string; type: "speech"; text: string; emotion: Emotion; lipSync?: boolean }
+  | { id: string; type: "action"; description: string; emotion?: Emotion; motion?: { group: string; index?: number } | null; durationMs?: number };
+export interface AnimationPlanV1 {
+  version: 1;
+  messageId: string;
+  characterId: string;
+  segments: AnimationSegment[];
+}
