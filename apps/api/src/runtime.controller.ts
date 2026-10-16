@@ -28,7 +28,7 @@ export class RuntimeController {
       probe(() =>
         process.env.VOICE_TTS_PROVIDER === "moss"
           ? http(
-              (process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001").replace(/\\/$/, "") + "/v1/health",
+              (process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001").replace(/[/]$/, "") + "/v1/health",
               { "X-API-Key": process.env.VOICE_STUDIO_API_KEY ?? "" },
             )
           : http(
