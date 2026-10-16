@@ -5,6 +5,7 @@ import { createViewer, type Live2DViewerHandle } from "../services/live2d-adapte
 const props = defineProps<{
   modelPath: string | null;
   mouthOpen?: number;
+  motion?: { group:string;index:number;revision:number } | null;
   emotion: string;
   expressionMap: Record<string, string> | null;
 }>();
@@ -74,6 +75,10 @@ watch(
       status.value = "error";
     });
   },
+);
+watch(
+  () => props.motion,
+  value => { if (value) void viewer?.playMotion(value.group,value.index).catch(cause => { error.value = String(cause); }); },
 );
 watch(
   () => props.mouthOpen,
