@@ -1,6 +1,7 @@
 import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
 import { useChat } from "./chat";
+import { useAnimation } from "./animation";
 import { useVoiceRecorder } from "../composables/useVoiceRecorder";
 import { useVoicePlayback } from "../composables/useVoicePlayback";
 import {
@@ -22,7 +23,8 @@ export type VoiceState =
   | "cancelled"
   | "error";
 export const useVoice = defineStore("voice", () => {
-  const chat = useChat(),
+  const animation = useAnimation(),
+    chat = useChat(),
     recorder = useVoiceRecorder(),
     playback = useVoicePlayback();
   const state = ref<VoiceState>("idle"),
@@ -50,6 +52,7 @@ export const useVoice = defineStore("voice", () => {
     clearTimer();
     recorder.cancel();
     playback.stop();
+    animation.cancel();
     state.value = "cancelled";
     progress.value = "";
   }
@@ -75,26 +78,20 @@ export const useVoice = defineStore("voice", () => {
   async function speak(text: string, signal: AbortSignal, token: number, reply?: Message) {
     const plan = reply?.animationPlan;
     if (plan?.version === 1 && plan.messageId === reply?.id) {
-      for (const segment of plan.segments) {
-        signal.throwIfAborted();
-        if (token !== generation) return;
-        if (segment.type === "action") {
-          if (segment.emotion) chat.emotion = segment.emotion;
-          // Motion is disabled unless a verified model capability exists.
-          continue;
-        }
-        chat.emotion = segment.emotion;
-        for (const chunk of speechChunks(segment.text)) {
+      await animation.play(plan, async (text, segmentSignal) => {
+        for (const chunk of speechChunks(text)) {
           signal.throwIfAborted();
+          segmentSignal.throwIfAborted();
           if (token !== generation) return;
           state.value = "synthesizing";
           const wav = await synthesize(chunk, ttsLanguage.value, signal);
           signal.throwIfAborted();
+          segmentSignal.throwIfAborted();
           if (token !== generation) return;
           state.value = "speaking";
-          await playback.play(wav, signal);
+          await playback.play(wav, AbortSignal.any([signal, segmentSignal]));
         }
-      }
+      });
       if (token === generation) { state.value = "idle"; progress.value = ""; controller = undefined; }
       return;
     }
@@ -177,7 +174,7 @@ export const useVoice = defineStore("voice", () => {
     try {
       await playback.unlock();
       signal.throwIfAborted();
-      await speak(reply.content, signal, token);
+      await speak(reply.content, signal, token, reply);
     } catch (e) {
       fail(e, token);
     }
