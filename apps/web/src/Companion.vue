@@ -61,6 +61,7 @@ onBeforeUnmount(() => off?.());
       :model-path="data.modelPath"
       :expression-map="data.expressionMap"
       :emotion="data.emotion || 'neutral'"
+      :motion="data.motion"
       :mouth-open="data.mouthOpen"
     />
     <footer class="companion-controls">
