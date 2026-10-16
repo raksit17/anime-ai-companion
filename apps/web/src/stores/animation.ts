@@ -19,7 +19,12 @@ export const useAnimation = defineStore("animation", () => {
         if (speak) await speak(segment.text, signal);
       } else {
         // Unverified semantic actions never select an unrelated motion.
-        motion.value = null;
+        // Only explicit capabilities, not arbitrary descriptions, may select a motion.
+        const candidate = segment.motion;
+        if (candidate && ["TapBody", "Idle"].includes(candidate.group)
+            && Number.isInteger(candidate.index ?? 0) && (candidate.index ?? 0) >= 0) {
+          motion.value = { group: candidate.group, index: candidate.index ?? 0, revision: timeline.value.revision };
+        } else motion.value = null;
         if (!speak) await new Promise<void>(resolve => {
           const timer = setTimeout(resolve, Math.min(1500, Math.max(0, segment.durationMs ?? 350)));
           signal.addEventListener("abort", () => {clearTimeout(timer);resolve();}, {once:true});
