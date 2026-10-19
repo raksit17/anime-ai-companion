@@ -85,52 +85,106 @@ export class VoiceService {
       throw error;
     }
   }
-  private async studioRequest(path: string, init: RequestInit, signal: AbortSignal) {
+  private async studioRequest(
+    path: string,
+    init: RequestInit,
+    signal: AbortSignal,
+  ) {
     let response: Response;
     try {
       response = await fetch(this.studioBase + path, {
         ...init,
-        headers: { ...(init.headers as Record<string, string> | undefined), "X-API-Key": this.studioKey },
+        headers: {
+          ...(init.headers as Record<string, string> | undefined),
+          "X-API-Key": this.studioKey,
+        },
         signal,
       });
     } catch (error) {
       if (signal.aborted) throw error;
-      throw new BadGatewayException("MOSS Voice Studio is unavailable — check VOICE_STUDIO_URL");
+      throw new BadGatewayException(
+        "MOSS Voice Studio is unavailable — check VOICE_STUDIO_URL",
+      );
     }
     if (!response.ok) {
       const detail = (await response.json().catch(() => ({}))) as any;
       throw new BadGatewayException(
-        typeof detail.detail === "string" ? detail.detail : `MOSS Voice Studio HTTP ${response.status}`,
+        typeof detail.detail === "string"
+          ? detail.detail
+          : `MOSS Voice Studio HTTP ${response.status}`,
       );
     }
     return response;
   }
-  private async synthesizeStudio(text: string, language: string, signal: AbortSignal): Promise<Buffer> {
-    const start = await this.studioRequest("/v1/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, language: language === "th" ? "Thai" : "English", voice_id: this.studioVoiceId || null }),
-    }, signal);
+  private async synthesizeStudio(
+    text: string,
+    language: string,
+    signal: AbortSignal,
+  ): Promise<Buffer> {
+    const start = await this.studioRequest(
+      "/v1/jobs",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          language: language === "th" ? "Thai" : "English",
+          voice_id: this.studioVoiceId || null,
+        }),
+      },
+      signal,
+    );
     const job = (await start.json()) as { id?: string };
-    if (!job.id) throw new BadGatewayException("MOSS Voice Studio did not return a job ID");
+    if (!job.id)
+      throw new BadGatewayException(
+        "MOSS Voice Studio did not return a job ID",
+      );
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline) {
       signal.throwIfAborted();
-      const statusResponse = await this.studioRequest(`/v1/jobs/${encodeURIComponent(job.id)}`, {}, signal);
-      const status = (await statusResponse.json()) as { status?: string; error?: string | null };
-      if (status.status === "failed") throw new BadGatewayException(status.error || "MOSS speech synthesis failed");
+      const statusResponse = await this.studioRequest(
+        `/v1/jobs/${encodeURIComponent(job.id)}`,
+        {},
+        signal,
+      );
+      const status = (await statusResponse.json()) as {
+        status?: string;
+        error?: string | null;
+      };
+      if (status.status === "failed")
+        throw new BadGatewayException(
+          status.error || "MOSS speech synthesis failed",
+        );
       if (status.status === "completed") {
-        const audio = await this.studioRequest(`/v1/jobs/${encodeURIComponent(job.id)}/audio`, {}, signal);
-        if (!audio.headers.get("content-type")?.includes("audio/wav")) throw new BadGatewayException("MOSS Voice Studio did not return WAV");
+        const audio = await this.studioRequest(
+          `/v1/jobs/${encodeURIComponent(job.id)}/audio`,
+          {},
+          signal,
+        );
+        if (!audio.headers.get("content-type")?.includes("audio/wav"))
+          throw new BadGatewayException("MOSS Voice Studio did not return WAV");
         const bytes = Buffer.from(await audio.arrayBuffer());
-        if (bytes.length > 25 * 1024 * 1024 || bytes.subarray(0, 4).toString() !== "RIFF" || bytes.subarray(8, 12).toString() !== "WAVE")
-          throw new BadGatewayException("MOSS Voice Studio returned an invalid WAV");
+        if (
+          bytes.length > 25 * 1024 * 1024 ||
+          bytes.subarray(0, 4).toString() !== "RIFF" ||
+          bytes.subarray(8, 12).toString() !== "WAVE"
+        )
+          throw new BadGatewayException(
+            "MOSS Voice Studio returned an invalid WAV",
+          );
         return bytes;
       }
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(done, 1000);
-        function done() { signal.removeEventListener("abort", abort); resolve(); }
-        function abort() { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); }
+        function done() {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        }
+        function abort() {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", abort);
+          reject(signal.reason);
+        }
         signal.addEventListener("abort", abort, { once: true });
         if (signal.aborted) abort();
       });
@@ -138,12 +192,20 @@ export class VoiceService {
     throw new BadGatewayException("MOSS Voice Studio synthesis timed out");
   }
   async health(signal: AbortSignal) {
-    if (process.env.VOICE_TTS_PROVIDER === "moss") return this.moss.health(signal);
+    if (process.env.VOICE_TTS_PROVIDER === "moss")
+      return this.moss.health(signal);
     if (localAiVoiceEnabled()) {
       const models = await this.localai.models(signal);
       const stt = models.includes(process.env.LOCALAI_STT_MODEL ?? "whisper-1");
       const tts = models.includes(process.env.LOCALAI_TTS_MODEL ?? "tts-1");
-      return { status: stt && tts ? "ok" : "degraded", tts_engine: "localai", tts_languages: ["th", "en", "ja"], model_state: tts ? "ready" : "missing", stt_available: stt, tts_available: tts };
+      return {
+        status: stt && tts ? "ok" : "degraded",
+        tts_engine: "localai",
+        tts_languages: ["th", "en", "ja"],
+        model_state: tts ? "ready" : "missing",
+        stt_available: stt,
+        tts_available: tts,
+      };
     }
     return (await this.request("/health", {}, signal)).json();
   }
@@ -155,8 +217,11 @@ export class VoiceService {
   ) {
     if (localAiVoiceEnabled()) {
       const release = await this.gate.acquire(signal);
-      try { return await this.localai.transcribe(audio, mime, language, signal); }
-      finally { release(); }
+      try {
+        return await this.localai.transcribe(audio, mime, language, signal);
+      } finally {
+        release();
+      }
     }
     const form = new FormData();
     const extension = mime.includes("mp4")
@@ -189,8 +254,10 @@ export class VoiceService {
   ): Promise<Buffer> {
     const release = await this.gate.acquire(signal);
     try {
-      if (process.env.VOICE_TTS_PROVIDER === "moss") return await this.moss.synthesize(text, language, undefined, signal);
-      if (localAiVoiceEnabled()) return await this.localai.synthesize(text, signal);
+      if (process.env.VOICE_TTS_PROVIDER === "moss")
+        return await this.moss.synthesize(text, language, undefined, signal);
+      if (localAiVoiceEnabled())
+        return await this.localai.synthesize(text, signal);
       const status = (await this.health(signal)) as any;
       if (status.tts_engine === "voxcpm2") {
         const response = await fetch(
