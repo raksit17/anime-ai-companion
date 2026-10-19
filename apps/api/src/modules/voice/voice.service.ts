@@ -21,6 +21,9 @@ export const AUDIO_TYPES = new Set([
 export class VoiceService {
   constructor(@Inject(ResourceGate) private gate: ResourceGate, @Inject(LocalAiService) private localai: LocalAiService) {}
   private base = process.env.VOICE_SERVICE_URL ?? "http://127.0.0.1:8000";
+  private studioBase = process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001";
+  private studioKey = process.env.VOICE_STUDIO_API_KEY ?? "";
+  private studioVoiceId = process.env.VOICE_STUDIO_VOICE_ID ?? "";
   private async request(
     path: string,
     options: RequestInit,
@@ -76,6 +79,58 @@ export class VoiceService {
       }
       throw error;
     }
+  }
+  private async studioRequest(path: string, init: RequestInit, signal: AbortSignal) {
+    let response: Response;
+    try {
+      response = await fetch(this.studioBase + path, {
+        ...init,
+        headers: { ...(init.headers as Record<string, string> | undefined), "X-API-Key": this.studioKey },
+        signal,
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new BadGatewayException("MOSS Voice Studio is unavailable — check VOICE_STUDIO_URL");
+    }
+    if (!response.ok) {
+      const detail = (await response.json().catch(() => ({}))) as any;
+      throw new BadGatewayException(
+        typeof detail.detail === "string" ? detail.detail : `MOSS Voice Studio HTTP ${response.status}`,
+      );
+    }
+    return response;
+  }
+  private async synthesizeStudio(text: string, language: string, signal: AbortSignal): Promise<Buffer> {
+    const start = await this.studioRequest("/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language: language === "th" ? "Thai" : "English", voice_id: this.studioVoiceId || null }),
+    }, signal);
+    const job = (await start.json()) as { id?: string };
+    if (!job.id) throw new BadGatewayException("MOSS Voice Studio did not return a job ID");
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      signal.throwIfAborted();
+      const statusResponse = await this.studioRequest(`/v1/jobs/${encodeURIComponent(job.id)}`, {}, signal);
+      const status = (await statusResponse.json()) as { status?: string; error?: string | null };
+      if (status.status === "failed") throw new BadGatewayException(status.error || "MOSS speech synthesis failed");
+      if (status.status === "completed") {
+        const audio = await this.studioRequest(`/v1/jobs/${encodeURIComponent(job.id)}/audio`, {}, signal);
+        if (!audio.headers.get("content-type")?.includes("audio/wav")) throw new BadGatewayException("MOSS Voice Studio did not return WAV");
+        const bytes = Buffer.from(await audio.arrayBuffer());
+        if (bytes.length > 25 * 1024 * 1024 || bytes.subarray(0, 4).toString() !== "RIFF" || bytes.subarray(8, 12).toString() !== "WAVE")
+          throw new BadGatewayException("MOSS Voice Studio returned an invalid WAV");
+        return bytes;
+      }
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(done, 1000);
+        function done() { signal.removeEventListener("abort", abort); resolve(); }
+        function abort() { clearTimeout(timer); signal.removeEventListener("abort", abort); reject(signal.reason); }
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+    }
+    throw new BadGatewayException("MOSS Voice Studio synthesis timed out");
   }
   async health(signal: AbortSignal) {
     if (localAiVoiceEnabled()) {

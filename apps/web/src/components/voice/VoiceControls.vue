@@ -33,6 +33,10 @@ onBeforeUnmount(() => void voice.dispose());
         {{ voice.health?.tts_engine ?? "ตรวจบริการเสียง" }}
       </button>
     </div>
+    <label class="auto-speech-toggle">
+      <input type="checkbox" :checked="voice.autoSpeak" :disabled="voice.active" @change="voice.setAutoSpeak(($event.target as HTMLInputElement).checked)" />
+      พูดคำตอบอัตโนมัติทันที
+    </label>
     <div class="voice-settings">
       <label
         >ภาษาที่พูด<select v-model="voice.sttLanguage" :disabled="voice.active">
@@ -96,7 +100,7 @@ onBeforeUnmount(() => void voice.dispose());
     </p>
     <p v-if="voice.error" class="error" role="alert">{{ voice.error }}</p>
     <small
-      >กดเริ่มพูด แล้วกดส่งเสียง · เสียงตอบตามข้อความ ไม่แปลภาษาอัตโนมัติ</small
+      >กดเริ่มพูด แล้วกดส่งเสียง · เปิดพูดอัตโนมัติเพื่อฟังคำตอบทันที</small
     >
   </section>
 </template>

@@ -18,7 +18,8 @@ export const useChat = defineStore("chat", () => {
     conversations = ref<Conversation[]>([]),
     conversation = ref(""),
     messages = ref<Message[]>([]),
-    memories = ref<Memory[]>([]);
+    memories = ref<Memory[]>([]),
+    assistantResponse = ref<Message | null>(null);
   const connected = ref(false),
     busy = ref(false),
     partial = ref(""),
@@ -84,6 +85,7 @@ export const useChat = defineStore("chat", () => {
     conversation.value = id;
     partial.value = "";
     messages.value = [];
+    assistantResponse.value = null;
     emotion.value = "neutral";
     if (character.value)
       localStorage.setItem("conversation:" + character.value.id, id);
@@ -150,6 +152,10 @@ export const useChat = defineStore("chat", () => {
       if (!matches(e)) return;
       if (e.message) {
         if (e.message.animationPlan) void animation.play(e.message.animationPlan).catch(() => {});
+        settle(e.message);
+      }
+      if (e.message) {
+        assistantResponse.value = e.message;
         settle(e.message);
       }
       else settle(undefined, new Error("ไม่พบคำตอบจากแชต"));
@@ -247,6 +253,7 @@ export const useChat = defineStore("chat", () => {
     conversation,
     messages,
     memories,
+    assistantResponse,
     connected,
     busy,
     partial,

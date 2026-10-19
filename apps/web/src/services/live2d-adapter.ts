@@ -6,6 +6,7 @@ export type Live2DViewerHandle = {
   playMotion(group:string,index:number):Promise<void>;
   inspectMotions():Record<string,number>;
   emotion(name: string, map: Record<string, string>): Promise<void>;
+  action(expression?: string, motion?: string): Promise<void>;
   destroy(): void;
 };
 
@@ -214,6 +215,16 @@ export async function createViewer(
       },
       inspectMotions() {
         return inspectCapabilities(internal.settings as {motions?:Record<string,unknown[]>}).motions;
+      },
+      async action(expression, motion) {
+        const settings = internal.settings as {
+          expressions?: Record<string, unknown>;
+          motions?: Record<string, unknown[]>;
+        };
+        if (expression && settings.expressions?.[expression])
+          await loadedModel.expression(expression);
+        if (motion && settings.motions?.[motion]?.length)
+          await loadedModel.motion(motion);
       },
       destroy: dispose,
     };

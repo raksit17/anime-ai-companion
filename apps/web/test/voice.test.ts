@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useVoice } from "../src/stores/voice";
 import { speechChunks } from "../src/services/speech-chunks";
+import { assistantDisplayText, parseAssistantSegments } from "../src/services/speech-segments";
 import { mouthFromSamples } from "../src/composables/useLipSync";
 const f = vi.hoisted(() => ({
   chat: {
@@ -116,6 +117,21 @@ it("long Thai text keeps combining characters and is never truncated", () => {
   expect(chunks.join("")).toBe(text);
   expect(chunks.every((c) => c.length <= 350)).toBe(true);
   expect(chunks.length).toBeGreaterThan(1);
+});
+it("parses ordered speech and action segments and leaves action text out of display", () => {
+  const content = JSON.stringify({
+    segments: [
+      { type: "speech", text: "กลับมาแล้วเหรอคะ", emotion: "happy" },
+      { type: "action", expression: "smile", motion: "wave" },
+      { type: "speech", text: "ดีใจจังเลย" },
+    ],
+  });
+  expect(parseAssistantSegments(content, "neutral")).toEqual([
+    { type: "speech", text: "กลับมาแล้วเหรอคะ", emotion: "happy" },
+    { type: "action", expression: "smile", motion: "wave" },
+    { type: "speech", text: "ดีใจจังเลย", emotion: "neutral" },
+  ]);
+  expect(assistantDisplayText(content)).toBe("กลับมาแล้วเหรอคะ\nดีใจจังเลย");
 });
 it("RMS mouth output is bounded, silent audio closes the mouth", () => {
   expect(mouthFromSamples(new Float32Array(20))).toBe(0);

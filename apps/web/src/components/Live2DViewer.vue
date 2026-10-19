@@ -37,6 +37,11 @@ async function previewMotion() {
   catch (cause) { error.value = String(cause); }
 }
 
+async function applyAction(action: { expression?: string; motion?: string }) {
+  if (viewer) await viewer.action(action.expression, action.motion);
+}
+defineExpose({ applyAction });
+
 function stopViewer() {
   if (mouthTestTimer) clearTimeout(mouthTestTimer);
   testingMouth.value = false;

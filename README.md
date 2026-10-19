@@ -52,7 +52,7 @@ Terminal 1 — NestJS:
 npm run dev -w apps/api
 ```
 
-Terminal 2 — FastAPI เสียง CPU:
+Terminal 2 — FastAPI เสียง CPU สำหรับไมโครโฟน (พอร์ต 8000):
 
 ```powershell
 cd apps/voice
@@ -107,6 +107,8 @@ Rust dependencies ใช้ major version 2; Cargo จะสร้าง Cargo.l
 3. แทนไฟล์โค้ดด้วยชุดนี้ แล้ว `npm ci`, `npm run setup`, `npm run generate`, `npm run db:migrate`
 4. `setup` เพิ่ม token ถ้าขาดหรือสั้นเกินไป โดยไม่ทับการตั้งค่าอื่น
 5. เปิด API/เสียง/Desktop แล้ว pair token
+
+พูดคำตอบด้วย MOSS Voice Studio ได้โดยตั้ง `VOICE_STUDIO_URL`, `VOICE_STUDIO_API_KEY` และ (เลือกได้) `VOICE_STUDIO_VOICE_ID` ใน `apps/api/.env` แล้วเปิด **พูดคำตอบอัตโนมัติทันที** ในแผงเสียง ตัวเลือกนี้บันทึกแยกในเครื่อง; MOSS สร้าง WAV ผ่าน job API แล้ว Companion เล่นตามลำดับพร้อม Live2D lip sync\n\nเริ่ม MOSS Voice Studio จาก `moss-voice-studio-starter` ให้ฟังที่พอร์ต 8001 แล้วตั้ง `VOICE_STUDIO_API_KEY` ให้ตรงกับ `API_KEY` ในไฟล์ backend `.env` ของ MOSS (ค่าเริ่มต้น `local-dev-key`) ส่วน `VOICE_STUDIO_VOICE_ID` เลือกได้และต้องเป็น ID ของ voice ที่บันทึกไว้ใน MOSS; เว้นว่างไว้เพื่อใช้เสียงเริ่มต้น
 
 ไม่เปลี่ยน Prisma schema และไม่ต้อง reset DB เอกสาร Phase 1/2 เป็นรายละเอียดของรุ่นก่อน; ขั้นตอนเปิดแอปและ authentication ให้ใช้ README นี้
 
