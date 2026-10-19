@@ -19,6 +19,7 @@ export class MossVoiceClient {
   private readonly url = (process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001").replace(/\/$/, "");
   private readonly key = process.env.VOICE_STUDIO_API_KEY ?? "";
   private readonly defaultVoice = process.env.VOICE_STUDIO_VOICE_ID ?? "";
+  private chatterboxEnglishVoiceId = "";
 
   private async call(path: string, options: RequestInit, signal: AbortSignal): Promise<Response> {
     if (!this.key.trim()) {
@@ -60,6 +61,24 @@ export class MossVoiceClient {
     return { items: Array.isArray(data.items) ? data.items : [] };
   }
 
+  private async voiceId(language: string, signal: AbortSignal) {
+    if (this.defaultVoice) return this.defaultVoice;
+    if (language !== "en") return null;
+    if (this.chatterboxEnglishVoiceId) return this.chatterboxEnglishVoiceId;
+    const { items } = await this.voices(signal);
+    const voice = items.find((item) =>
+      /chatterbox[-\s]?turbo/i.test(`${item.name} ${item.character ?? ""}`) &&
+      /^(en|english)(\b|[-_])/i.test(item.language.trim()),
+    );
+    if (!voice) {
+      throw new ServiceUnavailableException(
+        "MOSS voice 'chatterbox-turbo · English' was not found; set VOICE_STUDIO_VOICE_ID to its voice ID",
+      );
+    }
+    this.chatterboxEnglishVoiceId = voice.id;
+    return voice.id;
+  }
+
   async synthesize(text: string, language: string, voiceId: string | undefined, signal: AbortSignal): Promise<Buffer> {
     if (language !== "th" && language !== "en") {
       throw new HttpException("MOSS Voice Studio supports Thai and English only", 400);
@@ -71,7 +90,7 @@ export class MossVoiceClient {
       body: JSON.stringify({
         text,
         language: language === "th" ? "Thai" : "English",
-        voice_id: voiceId || this.defaultVoice || null,
+        voice_id: voiceId || await this.voiceId(language, signal),
       }),
     }, signal);
     const started = (await response.json()) as { id?: string };

@@ -82,7 +82,7 @@ export class OllamaService {
     if (!finished) throw new Error("Ollama stream ended before completion");
   }
   async emotion(userMessage: string, assistantReply: string, parent: AbortSignal) {
-    if (localAiEnabled()) return this.localai.emotion(content, parent);
+    if (localAiEnabled()) return this.localai.emotion(assistantReply, parent);
     try {
       const r = await this.request(
         {
