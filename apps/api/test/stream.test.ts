@@ -45,7 +45,7 @@ test("Thai feminine style rule is placed at the end of system prompt", () => {
     [],
     [],
   );
-  assert.match(p[0]!.content, /ห้ามลงท้ายด้วย ครับ/);
+  assert.match(p[0]!.content, /Never end with ครับ/);
 });
 test("feminine ending normalizer fixes trailing male particle without changing earlier content", () => {
   assert.equal(normalizeThaiFeminineEnding("ช่วยได้ค่ะครับ"), "ช่วยได้ค่ะ");

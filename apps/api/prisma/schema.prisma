@@ -35,6 +35,7 @@ model Message {
  conversation Conversation @relation(fields:[conversationId],references:[id],onDelete:Cascade)
  role String
  content String @db.Text
+ englishContent String? @db.Text
  emotion String?
  status String @default("complete")
  requestId String?

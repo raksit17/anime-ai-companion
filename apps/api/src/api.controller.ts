@@ -71,6 +71,16 @@ export class ApiController {
     return this.db.message.findMany({
       where: { conversationId: id },
       orderBy: { createdAt: "asc" },
+      select: {
+        id: true,
+        conversationId: true,
+        role: true,
+        content: true,
+        emotion: true,
+        status: true,
+        requestId: true,
+        createdAt: true,
+      },
     });
   }
   @Get("characters/:id/memories") memories(@Param("id") characterId: string) {

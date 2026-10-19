@@ -98,11 +98,16 @@ export class ChatGateway implements OnGatewayDisconnect {
         where: { conversationId: conv.id, requestId: dto.requestId },
       });
       if (duplicate) throw new Error("คำขอนี้ถูกบันทึกแล้ว กรุณาโหลดประวัติ");
+      const englishContent = await this.ai.translateToEnglish(
+        dto.content.trim(),
+        signal,
+      );
       await this.db.message.create({
         data: {
           conversationId: conv.id,
           role: "user",
           content: dto.content.trim(),
+          englishContent,
           requestId: dto.requestId,
         },
       });
@@ -120,14 +125,42 @@ export class ChatGateway implements OnGatewayDisconnect {
         orderBy: { createdAt: "desc" },
         take: 16,
       });
+      for (const previous of history) {
+        if (!previous.englishContent) {
+          const englishReply = previous.content.match(
+            /English:\s*([\s\S]*?)\n\s*Thai translation:/i,
+          )?.[1]?.trim();
+          const source = englishReply ?? previous.content;
+          previous.englishContent = /[\u0e00-\u0e7f]/.test(source)
+            ? await this.ai.translateToEnglish(source, signal)
+            : source;
+          await this.db.message.update({
+            where: { id: previous.id },
+            data: { englishContent: previous.englishContent },
+          });
+        }
+      }
       const memories = await this.db.memory.findMany({
         where: { characterId: conv.characterId },
         orderBy: { importance: "desc" },
         take: 8,
       });
+      const translateThai = (value: string) =>
+        /[\u0e00-\u0e7f]/.test(value)
+          ? this.ai.translateToEnglish(value, signal)
+          : Promise.resolve(value);
+      const personality = await translateThai(conv.character.personality);
+      const characterPrompt = await translateThai(conv.character.systemPrompt);
+      const translatedMemories = [];
+      for (const memory of memories)
+        translatedMemories.push(await translateThai(memory.content));
 
       for await (const delta of this.ai.stream(
-        buildPrompt(conv.character, memories, history.reverse()),
+        buildPrompt(
+          { ...conv.character, personality, systemPrompt: characterPrompt },
+          translatedMemories.map((content) => ({ content })),
+          history.reverse(),
+        ),
         signal,
       )) {
         content += delta;
@@ -135,6 +168,9 @@ export class ChatGateway implements OnGatewayDisconnect {
       }
       if (!content.trim()) throw new Error("โมเดลตอบข้อความว่าง");
       content = normalizeThaiFeminineEnding(content);
+      const assistantEnglishContent = content.match(
+        /English:\s*([\s\S]*?)\n\s*Thai translation:/i,
+      )?.[1]?.trim();
       const emotion = await this.ai.emotion(dto.content.trim(), content, signal);
       signal.throwIfAborted();
       const message = await this.db.message.create({
@@ -142,13 +178,15 @@ export class ChatGateway implements OnGatewayDisconnect {
           conversationId: conv.id,
           role: "assistant",
           content,
+          englishContent: assistantEnglishContent ?? content,
           emotion,
           requestId: dto.requestId,
         },
       });
       emit("chat:emotion", { emotion });
       const animationPlan = buildAnimationPlan(message.id, conv.characterId, content, emotion);
-      emit("chat:complete", { message: { ...message, animationPlan }, emotion });
+      const { englishContent: _englishContent, ...publicMessage } = message;
+      emit("chat:complete", { message: { ...publicMessage, animationPlan }, emotion });
     } catch (error) {
       if (savedUser && content) {
         try {
