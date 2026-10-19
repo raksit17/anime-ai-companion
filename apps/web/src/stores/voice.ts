@@ -37,8 +37,7 @@ export const useVoice = defineStore("voice", () => {
     sttLanguage = ref("auto"),
     ttsLanguage = ref("th"),
     health = ref<VoiceHealth | null>(null),
-    progress = ref(""),
-    autoSpeak = ref(typeof localStorage !== "undefined" && localStorage.getItem("companion-auto-speak") === "true");
+    progress = ref("");
   const active = computed(
     () => !["idle", "error", "cancelled"].includes(state.value),
   );
@@ -81,64 +80,95 @@ export const useVoice = defineStore("voice", () => {
     error.value = e instanceof Error ? e.message : String(e);
     controller = undefined;
   }
-  async function speak(text: string, signal: AbortSignal, token: number, reply?: Message) {
-    const plan = reply?.animationPlan;
-    if (plan?.version === 1 && plan.messageId === reply?.id) {
-      await animation.play(plan, async (text, segmentSignal) => {
-        for (const chunk of speechChunks(text)) {
-          signal.throwIfAborted();
-          segmentSignal.throwIfAborted();
-          if (token !== generation) return;
-          state.value = "synthesizing";
-          const wav = await synthesize(chunk, ttsLanguage.value, signal);
-          signal.throwIfAborted();
-          segmentSignal.throwIfAborted();
-          if (token !== generation) return;
-          state.value = "speaking";
-          await playback.play(wav, AbortSignal.any([signal, segmentSignal]));
-        }
-      });
-      if (token === generation) { state.value = "idle"; progress.value = ""; controller = undefined; }
-      return;
-    }
-    // Backwards compatibility: strip stage directions from older saved messages.
-    text = text.replace(/\*[^*\n]{1,240}\*/g, " ").trim();
-    const chunks = speechChunks(text);
-    for (let i = 0; i < chunks.length; i++) {
   async function speak(
     content: string,
     signal: AbortSignal,
     token: number,
-    emotion?: string | null,
+    reply?: {
+      id?: string;
+      animationPlan?: AnimationPlanV1;
+      emotion?: string | null;
+      content?: string;
+    },
   ) {
-    const segments = parseAssistantSegments(content, emotion);
-    const chunked = segments.map((segment) =>
-      segment.type === "speech" ? speechChunks(segment.text) : [],
-    );
-    const total = chunked.reduce((sum, chunks) => sum + chunks.length, 0);
+    const plan = reply?.animationPlan;
     let completed = 0;
-    for (let index = 0; index < segments.length; index++) {
-      signal.throwIfAborted();
-      if (token !== generation) return;
-      const segment = segments[index]!;
-      if (segment.type === "action") {
-        await actionHandler(segment);
-        continue;
-      }
-      if (segment.emotion) chat.emotion = segment.emotion as typeof chat.emotion;
-      for (const chunk of chunked[index]!) {
-        signal.throwIfAborted();
+
+    async function speakText(
+      text: string,
+      total: number,
+      segmentSignal?: AbortSignal,
+    ) {
+      const combined = segmentSignal
+        ? AbortSignal.any([signal, segmentSignal])
+        : signal;
+
+      for (const chunk of speechChunks(text)) {
+        combined.throwIfAborted();
         if (token !== generation) return;
+
         state.value = "synthesizing";
-        completed++;
-        progress.value = `${completed} / ${total}`;
-        const wav = await synthesize(chunk, ttsLanguage.value, signal);
-        signal.throwIfAborted();
+        progress.value = `${++completed} / ${total}`;
+
+        const wav = await synthesize(
+          chunk,
+          ttsLanguage.value,
+          combined,
+        );
+
+        combined.throwIfAborted();
         if (token !== generation) return;
+
         state.value = "speaking";
-        await playback.play(wav, signal);
+        await playback.play(wav, combined);
       }
     }
+
+    if (plan?.version === 1 && plan.messageId === reply?.id) {
+      const total = plan.segments.reduce(
+        (sum, segment) =>
+          sum +
+          (segment.type === "speech"
+            ? speechChunks(segment.text).length
+            : 0),
+        0,
+      );
+
+      await animation.play(plan, async (text, segmentSignal) => {
+        await speakText(text, total, segmentSignal);
+      });
+    } else {
+      const segments = parseAssistantSegments(
+        content,
+        reply?.emotion ?? null,
+      );
+
+      const total = segments.reduce(
+        (sum, segment) =>
+          sum +
+          (segment.type === "speech"
+            ? speechChunks(segment.text).length
+            : 0),
+        0,
+      );
+
+      for (const segment of segments) {
+        signal.throwIfAborted();
+        if (token !== generation) return;
+
+        if (segment.type === "action") {
+          await actionHandler(segment);
+          continue;
+        }
+
+        if (segment.emotion) {
+          chat.emotion = segment.emotion as typeof chat.emotion;
+        }
+
+        await speakText(segment.text, total);
+      }
+    }
+
     if (token === generation) {
       state.value = "idle";
       progress.value = "";
@@ -182,18 +212,44 @@ export const useVoice = defineStore("voice", () => {
     try {
       await playback.unlock();
       if (token !== generation) return;
-      await speak(message.content, controller.signal, token, message.emotion);
+      await speak(message.content, controller.signal, token, message);
     } catch (e) {
       fail(e, token);
     }
   }
+  let awaitingTypedReply = false;
+  let previousResponseId = "";
+
   watch(
-    () => chat.assistantResponse?.id,
-    (id) => {
-      if (!id || id === lastAutoResponseId) return;
-      lastAutoResponseId = id;
-      const message = chat.assistantResponse;
-      if (message) void autoPlay(message);
+    () => [
+      chat.busy,
+      chat.messages.filter(
+        (m) => m.role === "assistant" && m.status === "complete",
+      ).at(-1)?.id,
+    ] as const,
+    () => {
+      const latest = [...chat.messages]
+        .reverse()
+        .find(
+          (m) => m.role === "assistant" && m.status === "complete",
+        );
+
+      if (chat.busy) {
+        if (state.value === "idle" && !awaitingTypedReply) {
+          awaitingTypedReply = true;
+          previousResponseId = latest?.id ?? "";
+        }
+        return;
+      }
+
+      if (!awaitingTypedReply || !latest) return;
+      if (latest.id === previousResponseId) return;
+
+      awaitingTypedReply = false;
+      if (latest.id === lastAutoResponseId) return;
+      lastAutoResponseId = latest.id;
+
+      void autoPlay(latest);
     },
   );
   async function start() {
@@ -237,7 +293,6 @@ export const useVoice = defineStore("voice", () => {
       const reply = await chat.sendAndWait(transcript.value, signal);
       signal.throwIfAborted();
       await speak(reply.content, signal, token, reply);
-      await speak(reply.content, signal, token, reply.emotion);
     } catch (e) {
       fail(e, token);
     }
@@ -259,7 +314,6 @@ export const useVoice = defineStore("voice", () => {
       await playback.unlock();
       signal.throwIfAborted();
       await speak(reply.content, signal, token, reply);
-      await speak(reply.content, signal, token, reply.emotion);
     } catch (e) {
       fail(e, token);
     }
@@ -291,7 +345,6 @@ export const useVoice = defineStore("voice", () => {
     health,
     progress,
     active,
-    autoSpeak,
     mouthOpen: playback.mouthOpen,
     setActionHandler,
     setAutoSpeak,

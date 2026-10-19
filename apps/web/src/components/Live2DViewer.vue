@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount } from "vue";
-<<<<<<< HEAD
-import { createViewer, type Live2DViewerHandle } from "../services/live2d-adapter";
-
-=======
 import type { MotionMap } from "@companion/contracts";
-import { createViewer } from "../services/live2d-adapter";
->>>>>>> origin/feature/emotional-live2d-chat
+import {
+  createViewer,
+  type Live2DViewerHandle,
+} from "../services/live2d-adapter";
+
 const props = defineProps<{
   modelPath: string | null;
   mouthOpen?: number;
-  motion?: { group:string;index:number;revision:number } | null;
+  motion?: {
+    group: string;
+    index: number;
+    revision: number;
+  } | null;
   emotion: string;
   expressionMap: Record<string, string> | null;
   motionMap: MotionMap | null;
@@ -21,73 +24,122 @@ const host = ref<HTMLElement>();
 const canvas = ref<HTMLCanvasElement>();
 const error = ref("");
 const status = ref<"empty" | "loading" | "ready" | "error">("empty");
-let viewer: Live2DViewerHandle | undefined;
-let controller: AbortController | undefined;
-let generation = 0;
-let mouthTestTimer: ReturnType<typeof setTimeout> | undefined;
+
 const availableMotions = ref<Record<string, number>>({});
 const selectedMotion = ref("TapBody");
 const selectedIndex = ref(0);
 const testingMouth = ref(false);
-function testMouth() {
-  if (!viewer) return;
-  if (mouthTestTimer) clearTimeout(mouthTestTimer);
-  testingMouth.value = true;
-  viewer.setMouthOpen(1);
-  mouthTestTimer = setTimeout(() => {
-    testingMouth.value = false;
-    viewer?.setMouthOpen(props.mouthOpen ?? 0);
-  }, 1500);
-}
-async function previewMotion() {
-  try { await viewer?.playMotion(selectedMotion.value, selectedIndex.value); }
-  catch (cause) { error.value = String(cause); }
-}
 
-async function applyAction(action: { expression?: string; motion?: string }) {
-  if (viewer) await viewer.action(action.expression, action.motion);
-}
-defineExpose({ applyAction });
+let viewer: Live2DViewerHandle | undefined;
+let controller: AbortController | undefined;
+let generation = 0;
+let textMouthFrame = 0;
+let mouthTestTimer: ReturnType<typeof setTimeout> | undefined;
 
 function stopViewer() {
   if (mouthTestTimer) clearTimeout(mouthTestTimer);
+  mouthTestTimer = undefined;
+  cancelAnimationFrame(textMouthFrame);
+  textMouthFrame = 0;
   testingMouth.value = false;
   availableMotions.value = {};
+
   controller?.abort();
   controller = undefined;
   viewer?.destroy();
   viewer = undefined;
-=======
-let textMouthFrame = 0;
+}
+
+function testMouth() {
+  if (!viewer) return;
+  if (mouthTestTimer) clearTimeout(mouthTestTimer);
+
+  testingMouth.value = true;
+  viewer.setMouthOpen(1);
+
+  mouthTestTimer = setTimeout(() => {
+    testingMouth.value = false;
+    viewer?.setMouthOpen(props.mouthOpen ?? 0);
+    mouthTestTimer = undefined;
+  }, 1500);
+}
+
+async function previewMotion() {
+  try {
+    await viewer?.playMotion(
+      selectedMotion.value,
+      selectedIndex.value,
+    );
+  } catch (cause) {
+    error.value = String(cause);
+  }
+}
+
+async function applyAction(action: {
+  expression?: string;
+  motion?: string;
+}) {
+  await viewer?.action(action.expression, action.motion);
+}
+
+defineExpose({ applyAction });
+
 function animateTextMouth(time: number) {
   if (props.interactionState !== "responding") return;
-  // Text replies have no audio waveform, so use a restrained speaking animation.
-  viewer?.setMouthOpen(0.12 + 0.34 * (0.5 + 0.5 * Math.sin(time / 105)));
+
+  if (!testingMouth.value && viewer) {
+    const audioMouth = props.mouthOpen ?? 0;
+    const textMouth =
+      0.12 + 0.34 * (0.5 + 0.5 * Math.sin(time / 105));
+
+    viewer.setMouthOpen(
+      audioMouth > 0.02 ? audioMouth : textMouth,
+    );
+  }
+
   textMouthFrame = requestAnimationFrame(animateTextMouth);
 }
+
 function syncInteractionState() {
   cancelAnimationFrame(textMouthFrame);
+  textMouthFrame = 0;
+
   if (props.interactionState === "responding") {
     textMouthFrame = requestAnimationFrame(animateTextMouth);
     return;
   }
+
   viewer?.setMouthOpen(props.mouthOpen ?? 0);
+
   const motion = props.motionMap?.[props.interactionState];
-  if (motion) void viewer?.playMotion(motion).catch(() => {});
+  if (motion?.group) {
+    void viewer
+      ?.playMotion(motion.group, motion.index ?? 0)
+      .catch((cause) => {
+        error.value = String(cause);
+      });
+  }
 }
+
 async function applyEmotion() {
+  if (!viewer) return;
+
   try {
-    await viewer?.setEmotion(
+    await viewer.emotion(
       props.emotion,
       props.expressionMap ?? {},
-      props.motionMap ?? {},
     );
-  } catch (e) {
+
+    const motion = props.motionMap?.[props.emotion];
+    if (motion?.group) {
+      await viewer.playMotion(motion.group, motion.index ?? 0);
+    }
+  } catch (cause) {
     error.value =
-      e instanceof Error ? e.message : "ใช้ Expression ที่กำหนดไม่ได้";
+      cause instanceof Error ? cause.message : String(cause);
   }
->>>>>>> origin/feature/emotional-live2d-chat
 }
+
 watch(
   () => [props.modelPath, canvas.value, host.value],
   async () => {
@@ -95,11 +147,15 @@ watch(
     stopViewer();
     error.value = "";
     status.value = "empty";
-    if (!props.modelPath || !canvas.value || !host.value) return;
+
+    if (!props.modelPath || !canvas.value || !host.value) {
+      return;
+    }
 
     status.value = "loading";
     const active = new AbortController();
     controller = active;
+
     try {
       const next = await createViewer(
         canvas.value,
@@ -113,65 +169,67 @@ watch(
           }
         },
       );
+
       if (token !== generation || active.signal.aborted) {
         next.destroy();
         return;
       }
-<<<<<<< HEAD
+
       viewer = next;
       availableMotions.value = next.inspectMotions();
-      await next.emotion(props.emotion, props.expressionMap ?? {});
+
+      await applyEmotion();
+      syncInteractionState();
       next.setMouthOpen(props.mouthOpen ?? 0);
+
       if (!error.value) status.value = "ready";
     } catch (cause) {
       if (token === generation && !active.signal.aborted) {
-        error.value = cause instanceof Error ? cause.message : String(cause);
+        error.value =
+          cause instanceof Error ? cause.message : String(cause);
         status.value = "error";
         console.error("[Live2D] Load failed", cause);
       }
-=======
-      viewer = v;
-      await applyEmotion();
-      syncInteractionState();
-    } catch (e) {
-      if (token === generation)
-        error.value = e instanceof Error ? e.message : "โหลดโมเดลไม่ได้";
-    } finally {
-      if (token === generation) loading.value = false;
->>>>>>> origin/feature/emotional-live2d-chat
     }
   },
   { immediate: true, flush: "post" },
 );
+
 watch(
-<<<<<<< HEAD
-  () => [props.emotion, props.expressionMap],
-  () => {
-    void viewer?.emotion(props.emotion, props.expressionMap ?? {}).catch((cause) => {
-      error.value = cause instanceof Error ? cause.message : String(cause);
-      status.value = "error";
-    });
-  },
-=======
   () => [props.emotion, props.expressionMap, props.motionMap],
   () => void applyEmotion(),
 );
+
+watch(
+  () => props.interactionState,
+  () => syncInteractionState(),
+);
+
 watch(
   () => props.motion,
-  value => { if (value) void viewer?.playMotion(value.group,value.index).catch(cause => { error.value = String(cause); }); },
+  (value) => {
+    if (!value) return;
+
+    void viewer
+      ?.playMotion(value.group, value.index)
+      .catch((cause) => {
+        error.value = String(cause);
+      });
+  },
 );
+
 watch(
   () => props.mouthOpen,
-  (value) => { if (!testingMouth.value) viewer?.setMouthOpen(value ?? 0); },
+  (value) => {
+    if (!testingMouth.value) {
+      viewer?.setMouthOpen(value ?? 0);
+    }
+  },
 );
+
 onBeforeUnmount(() => {
   generation++;
-<<<<<<< HEAD
   stopViewer();
-=======
-  cancelAnimationFrame(textMouthFrame);
-  viewer?.destroy();
->>>>>>> origin/feature/emotional-live2d-chat
 });
 </script>
 

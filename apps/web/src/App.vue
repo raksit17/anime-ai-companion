@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import DesktopSettings from "./components/DesktopSettings.vue";
 import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";

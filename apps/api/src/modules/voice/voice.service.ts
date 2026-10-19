@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { ResourceGate } from "../../resources";
 import { LocalAiService, localAiVoiceEnabled } from "../../ai/localai.service";
+import { MossVoiceClient } from "./moss-voice.client";
 export const AUDIO_TYPES = new Set([
   "audio/webm",
   "video/webm",
@@ -19,7 +20,11 @@ export const AUDIO_TYPES = new Set([
 ]);
 @Injectable()
 export class VoiceService {
-  constructor(@Inject(ResourceGate) private gate: ResourceGate, @Inject(LocalAiService) private localai: LocalAiService) {}
+  constructor(
+    @Inject(ResourceGate) private gate: ResourceGate,
+    @Inject(LocalAiService) private localai: LocalAiService,
+    @Inject(MossVoiceClient) private moss: MossVoiceClient,
+  ) {}
   private base = process.env.VOICE_SERVICE_URL ?? "http://127.0.0.1:8000";
   private studioBase = process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001";
   private studioKey = process.env.VOICE_STUDIO_API_KEY ?? "";
@@ -133,6 +138,7 @@ export class VoiceService {
     throw new BadGatewayException("MOSS Voice Studio synthesis timed out");
   }
   async health(signal: AbortSignal) {
+    if (process.env.VOICE_TTS_PROVIDER === "moss") return this.moss.health(signal);
     if (localAiVoiceEnabled()) {
       const models = await this.localai.models(signal);
       const stt = models.includes(process.env.LOCALAI_STT_MODEL ?? "whisper-1");
@@ -183,6 +189,7 @@ export class VoiceService {
   ): Promise<Buffer> {
     const release = await this.gate.acquire(signal);
     try {
+      if (process.env.VOICE_TTS_PROVIDER === "moss") return await this.moss.synthesize(text, language, undefined, signal);
       if (localAiVoiceEnabled()) return await this.localai.synthesize(text, signal);
       const status = (await this.health(signal)) as any;
       if (status.tts_engine === "voxcpm2") {
