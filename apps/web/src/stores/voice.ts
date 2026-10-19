@@ -33,7 +33,7 @@ export const useVoice = defineStore("voice", () => {
     ttsLanguage = ref("th"),
     health = ref<VoiceHealth | null>(null),
     progress = ref(""),
-    autoSpeak = ref(localStorage.getItem("companion-auto-speak") === "true");
+    autoSpeak = ref(typeof localStorage !== "undefined" && localStorage.getItem("companion-auto-speak") === "true");
   const active = computed(
     () => !["idle", "error", "cancelled"].includes(state.value),
   );
@@ -134,14 +134,14 @@ export const useVoice = defineStore("voice", () => {
         await playback.unlock();
         error.value = "";
         autoSpeak.value = true;
-        localStorage.setItem("companion-auto-speak", "true");
+        if (typeof localStorage !== "undefined") localStorage.setItem("companion-auto-speak", "true");
       } catch (e) {
         autoSpeak.value = false;
         error.value = e instanceof Error ? e.message : String(e);
       }
     } else {
       autoSpeak.value = false;
-      localStorage.setItem("companion-auto-speak", "false");
+      if (typeof localStorage !== "undefined") localStorage.setItem("companion-auto-speak", "false");
     }
   }
   async function autoPlay(message: { id: string; content: string; emotion?: string | null }) {
