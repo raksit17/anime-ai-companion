@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { ChatGateway } from "../src/chat.gateway";
 function setup(ai: any) {
+  ai.translateToEnglish ??= async (content: string) => content;
   const rows: any[] = [];
   const events: any[] = [];
   const db: any = {

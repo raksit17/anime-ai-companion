@@ -92,6 +92,16 @@ export const useVoice = defineStore("voice", () => {
     },
   ) {
     const plan = reply?.animationPlan;
+    const bilingual = content.match(
+      /English:\s*([\s\S]*?)\n\s*Thai translation:\s*([\s\S]*)/i,
+    );
+    const speechContent = bilingual
+      ? ttsLanguage.value.toLowerCase().startsWith("th")
+        ? bilingual[2]!.trim()
+        : ttsLanguage.value.toLowerCase().startsWith("en")
+          ? bilingual[1]!.trim()
+          : bilingual[1]!.trim()
+      : content;
     let completed = 0;
 
     async function speakText(
@@ -124,7 +134,7 @@ export const useVoice = defineStore("voice", () => {
       }
     }
 
-    if (plan?.version === 1 && plan.messageId === reply?.id) {
+    if (plan?.version === 1 && plan.messageId === reply?.id && !bilingual) {
       const total = plan.segments.reduce(
         (sum, segment) =>
           sum +
@@ -139,7 +149,7 @@ export const useVoice = defineStore("voice", () => {
       });
     } else {
       const segments = parseAssistantSegments(
-        content,
+        speechContent,
         reply?.emotion ?? null,
       );
 
