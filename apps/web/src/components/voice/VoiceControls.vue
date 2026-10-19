@@ -48,7 +48,7 @@ onBeforeUnmount(() => void voice.dispose());
       ><label
         >ภาษาเสียงตอบ<select
           v-model="voice.ttsLanguage"
-          :disabled="voice.active"
+          :disabled="voice.active || voice.health?.tts_engine === 'moss'"
         >
           <option
             v-for="lang in voice.health?.tts_languages ?? ['th']"

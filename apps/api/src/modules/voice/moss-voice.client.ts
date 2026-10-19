@@ -62,8 +62,7 @@ export class MossVoiceClient {
   }
 
   private async voiceId(language: string, signal: AbortSignal) {
-    if (this.defaultVoice) return this.defaultVoice;
-    if (language !== "en") return null;
+    if (language !== "en") return this.defaultVoice || null;
     if (this.chatterboxEnglishVoiceId) return this.chatterboxEnglishVoiceId;
     const { items } = await this.voices(signal);
     const voice = items.find((item) =>

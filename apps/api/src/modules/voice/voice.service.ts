@@ -189,7 +189,7 @@ export class VoiceService {
   ): Promise<Buffer> {
     const release = await this.gate.acquire(signal);
     try {
-      if (process.env.VOICE_TTS_PROVIDER === "moss") return await this.moss.synthesize(text, language, undefined, signal);
+      if (process.env.VOICE_TTS_PROVIDER === "moss") return await this.moss.synthesize(text, "en", undefined, signal);
       if (localAiVoiceEnabled()) return await this.localai.synthesize(text, signal);
       const status = (await this.health(signal)) as any;
       if (status.tts_engine === "voxcpm2") {

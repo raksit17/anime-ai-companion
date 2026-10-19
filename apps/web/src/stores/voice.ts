@@ -103,7 +103,9 @@ export const useVoice = defineStore("voice", () => {
       /English:\s*([\s\S]*?)\n\s*Thai translation:\s*([\s\S]*)/i,
     );
     const speechContent = bilingual
-      ? ttsLanguage.value.toLowerCase().startsWith("th")
+      ? health.value?.tts_engine === "moss"
+        ? bilingual[1]!.trim()
+        : ttsLanguage.value.toLowerCase().startsWith("th")
         ? bilingual[2]!.trim()
         : ttsLanguage.value.toLowerCase().startsWith("en")
           ? bilingual[1]!.trim()
@@ -129,7 +131,7 @@ export const useVoice = defineStore("voice", () => {
 
         const wav = await synthesize(
           chunk,
-          ttsLanguage.value,
+          health.value?.tts_engine === "moss" ? "en" : ttsLanguage.value,
           combined,
         );
 
