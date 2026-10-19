@@ -22,6 +22,7 @@ export interface Message {
   emotion: Emotion | null;
   status: string;
   createdAt: string;
+  animationPlan?: AnimationPlanV1;
 }
 export interface Conversation {
   id: string;
@@ -45,5 +46,16 @@ export interface ChatEvent {
   delta?: string;
   emotion?: Emotion;
   message?: Message;
+  animationPlan?: AnimationPlanV1;
   error?: string;
+}
+
+export type AnimationSegment =
+  | { id: string; type: "speech"; text: string; emotion: Emotion; lipSync?: boolean }
+  | { id: string; type: "action"; description: string; emotion?: Emotion; motion?: { group: string; index?: number } | null; durationMs?: number };
+export interface AnimationPlanV1 {
+  version: 1;
+  messageId: string;
+  characterId: string;
+  segments: AnimationSegment[];
 }

@@ -72,6 +72,7 @@ onBeforeUnmount(() => off?.());
       :motion-map="data.motionMap"
       :interaction-state="data.interactionState"
       :emotion="data.emotion || 'neutral'"
+      :motion="data.motion"
       :mouth-open="data.mouthOpen"
     />
     <footer class="companion-controls">

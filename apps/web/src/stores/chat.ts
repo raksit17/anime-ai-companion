@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { useAnimation } from "./animation";
 import { ref } from "vue";
 import { io } from "socket.io-client";
 import { api, base } from "../api";
@@ -11,12 +12,14 @@ import type {
   ChatEvent,
 } from "@companion/contracts";
 export const useChat = defineStore("chat", () => {
+  const animation = useAnimation();
   const characters = ref<Character[]>([]),
     character = ref<Character | null>(null),
     conversations = ref<Conversation[]>([]),
     conversation = ref(""),
     messages = ref<Message[]>([]),
-    memories = ref<Memory[]>([]);
+    memories = ref<Memory[]>([]),
+    assistantResponse = ref<Message | null>(null);
   const connected = ref(false),
     busy = ref(false),
     partial = ref(""),
@@ -65,6 +68,7 @@ export const useChat = defineStore("chat", () => {
   }
   async function selectCharacter(c: Character) {
     if (busy.value) return;
+    animation.cancel();
     character.value = c;
     localStorage.setItem("characterId", c.id);
     await refreshLists();
@@ -77,9 +81,11 @@ export const useChat = defineStore("chat", () => {
   }
   async function selectConversation(id: string) {
     if (busy.value) return;
+    animation.cancel();
     conversation.value = id;
     partial.value = "";
     messages.value = [];
+    assistantResponse.value = null;
     emotion.value = "neutral";
     if (character.value)
       localStorage.setItem("conversation:" + character.value.id, id);
@@ -123,6 +129,7 @@ export const useChat = defineStore("chat", () => {
     });
     socket.on("disconnect", () => {
       connected.value = false;
+      animation.cancel();
       settle(undefined, new Error("การเชื่อมต่อแชตหลุด"));
       if (busy.value) {
         busy.value = false;
@@ -143,7 +150,14 @@ export const useChat = defineStore("chat", () => {
     });
     socket.on("chat:complete", (e: ChatEvent) => {
       if (!matches(e)) return;
-      if (e.message) settle(e.message);
+      if (e.message) {
+        if (e.message.animationPlan) void animation.play(e.message.animationPlan).catch(() => {});
+        settle(e.message);
+      }
+      if (e.message) {
+        assistantResponse.value = e.message;
+        settle(e.message);
+      }
       else settle(undefined, new Error("ไม่พบคำตอบจากแชต"));
       busy.value = false;
       partial.value = "";
@@ -229,6 +243,7 @@ export const useChat = defineStore("chat", () => {
     return message;
   }
   function stop() {
+    animation.cancel();
     socket?.emit("chat:stop", { requestId });
   }
   return {
@@ -238,6 +253,7 @@ export const useChat = defineStore("chat", () => {
     conversation,
     messages,
     memories,
+    assistantResponse,
     connected,
     busy,
     partial,

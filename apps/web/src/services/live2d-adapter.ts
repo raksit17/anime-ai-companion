@@ -1,9 +1,12 @@
 import * as PIXI from "pixi.js";
-<<<<<<< HEAD
+import { inspectCapabilities } from "../animation/motion-capabilities";
 
 export type Live2DViewerHandle = {
   setMouthOpen(value: number): void;
+  playMotion(group:string,index:number):Promise<void>;
+  inspectMotions():Record<string,number>;
   emotion(name: string, map: Record<string, string>): Promise<void>;
+  action(expression?: string, motion?: string): Promise<void>;
   destroy(): void;
 };
 
@@ -167,6 +170,7 @@ export async function createViewer(
     let mouth = 0;
     // R5 stores CubismIdHandle objects in the motion manager, not plain string IDs.
     const lipIds = (internal.motionManager as { lipSyncIds?: unknown[] }).lipSyncIds ?? [];
+    console.info("[Live2D] LipSync parameter count:", lipIds.length);
     const coreModel = internal.coreModel as {
       setParameterValueById(id: unknown, value: number): void;
     };
@@ -203,6 +207,27 @@ export async function createViewer(
       async emotion(name, map) {
         const expression = map[name];
         if (expression) await loadedModel.expression(expression);
+      },
+      async playMotion(group,index) {
+        const settings = internal.settings as {motions?:Record<string,unknown[]>};
+        // Only explicitly approved motion mappings may run; model groups by themselves have no known semantics.
+        if (!Number.isInteger(index) || index < 0 || index >= (settings.motions?.[group]?.length ?? 0)) {
+          throw new Error(`Unknown motion: ${group}[${index}]`);
+        }
+        await Promise.resolve(loadedModel.motion(group,index));
+      },
+      inspectMotions() {
+        return inspectCapabilities(internal.settings as {motions?:Record<string,unknown[]>}).motions;
+      },
+      async action(expression, motion) {
+        const settings = internal.settings as {
+          expressions?: Record<string, unknown>;
+          motions?: Record<string, unknown[]>;
+        };
+        if (expression && settings.expressions?.[expression])
+          await loadedModel.expression(expression);
+        if (motion && settings.motions?.[motion]?.length)
+          await loadedModel.motion(motion);
       },
       destroy: dispose,
     };

@@ -1,4 +1,5 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Inject } from "@nestjs/common";
+import { LocalAiService, localAiEnabled } from "./localai.service";
 import { parseNDJSON } from "./ndjson";
 export const emotions = [
   "neutral",
@@ -10,6 +11,7 @@ export const emotions = [
 ] as const;
 @Injectable()
 export class OllamaService {
+  constructor(@Inject(LocalAiService) private localai: LocalAiService) {}
   async request(payload: object, signal: AbortSignal) {
     const r = await fetch(
       `${process.env.OLLAMA_URL ?? "http://127.0.0.1:11434"}/api/chat`,
@@ -34,6 +36,10 @@ export class OllamaService {
     messages: { role: string; content: string }[],
     signal: AbortSignal,
   ) {
+    if (localAiEnabled()) {
+      yield* this.localai.stream(messages, signal);
+      return;
+    }
     const r = await this.request(
       {
         messages,
@@ -53,7 +59,8 @@ export class OllamaService {
     }
     if (!finished) throw new Error("Ollama stream ended before completion");
   }
-  async emotion(userMessage: string, assistantReply: string, parent: AbortSignal) {
+  async emotion(content: string, parent: AbortSignal) {
+    if (localAiEnabled()) return this.localai.emotion(content, parent);
     try {
       const r = await this.request(
         {

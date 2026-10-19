@@ -92,12 +92,12 @@ onBeforeUnmount(() => clearInterval(timer));
         </button>
       </form>
       <h3>บริการบนเครื่อง</h3>
-      <p v-for="name in ['backend', 'database', 'ollama', 'voice']" :key="name">
+      <p v-for="name in ['backend', 'database', 'ollama', 'localai', 'voice']" :key="name">
         {{ name }}: <strong>{{ runtime[name]?.status ?? "unknown" }}</strong>
       </p>
       <p class="muted small">
-        เปิด NestJS, PostgreSQL, Ollama และ FastAPI แยกกัน
-        แอปไม่เปิดบริการให้อัตโนมัติ
+        เปิด NestJS, PostgreSQL และ AI backend ที่เลือก (Ollama/LocalAI)
+        รวมถึง FastAPI ถ้าใช้เสียงแบบเดิม แอปไม่เปิดบริการให้อัตโนมัติ
       </p>
       <button @click="refresh" :disabled="loading">ตรวจใหม่</button>
       <template v-if="desktop"

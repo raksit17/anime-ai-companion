@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/components/VisionControls.vue",
+    "src/stores/chat.ts",
+    "src/stores/voice.ts",
+    "src/api.ts",
+    "src/services/**/*.ts",
+    "src/composables/**/*.ts"
+  ],
+  "exclude": ["src/services/live2d-adapter.ts"]
+}

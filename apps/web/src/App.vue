@@ -2,13 +2,19 @@
 import DesktopSettings from "./components/DesktopSettings.vue";
 import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";
+import VisionControls from "./components/VisionControls.vue";
 import { useVoice } from "./stores/voice";
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
+import { useAnimation } from "./stores/animation";
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
 import { useChat } from "./stores/chat";
 import { api } from "./api";
 import Live2DViewer from "./components/Live2DViewer.vue";
 import type { Character } from "@companion/contracts";
+import { assistantDisplayText } from "./services/speech-segments";
 const voice = useVoice();
+const animation = useAnimation();
+const live2d = ref<{ applyAction: (action: { expression?: string; motion?: string }) => Promise<void> }>();
+voice.setActionHandler((action) => live2d.value?.applyAction(action) ?? Promise.resolve());
 const chat = useChat(),
   text = ref(""),
   tab = ref("chat"),
@@ -65,13 +71,13 @@ onMounted(async () => {
         name: chat.character?.name ?? "Komorebi",
         modelPath: chat.character?.modelPath ?? null,
         expressionMap: chat.character?.expressionMap ?? null,
-        motionMap: chat.character?.motionMap ?? null,
-        interactionState: interactionState.value,
-        emotion: chat.emotion,
+        emotion: animation.timeline.phase !== "idle" ? animation.emotion : chat.emotion,
         mouthOpen: voice.mouthOpen,
         voiceState: voice.state,
         connected: chat.connected,
         busy: chat.busy,
+        animation: animation.timeline,
+        motion: animation.motion,
       };
       const json = JSON.stringify(snapshot);
       if (json === last) return;
@@ -92,6 +98,7 @@ onBeforeUnmount(() => {
   clearInterval(mirrorTimer);
   stopListener?.();
   voice.cancel();
+  animation.cancel();
   chat.stop();
 });
 watch(
@@ -161,6 +168,7 @@ async function send() {
   if (voice.active) return;
   const value = text.value.trim();
   if (!value) return;
+  if (voice.autoSpeak) void voice.preparePlayback();
   text.value = "";
   await chat.guard(async () => {
     const reply = await chat.sendAndWait(value, AbortSignal.timeout(320000));
@@ -273,7 +281,7 @@ async function deleteCharacter() {
         <div class="system-card">
           <span class="eyebrow">ON YOUR MACHINE</span>
           <p>
-            Ollama <strong>{{ chat.health?.ollama ?? "unknown" }}</strong>
+            {{ chat.health?.provider === "localai" ? "LocalAI" : "Ollama" }} <strong>{{ chat.health?.provider === "localai" ? chat.health?.localai : (chat.health?.ollama ?? "unknown") }}</strong>
           </p>
           <p>
             PostgreSQL <strong>{{ chat.health?.database ?? "unknown" }}</strong>
@@ -303,10 +311,12 @@ async function deleteCharacter() {
           </button>
         </div>
         <Live2DViewer
+          ref="live2d"
           :mouth-open="voice.mouthOpen"
           :key="chat.character?.id"
           :model-path="chat.character?.modelPath ?? null"
-          :emotion="chat.emotion"
+          :emotion="animation.timeline.phase !== 'idle' ? animation.emotion : chat.emotion"
+          :motion="animation.motion"
           :expression-map="chat.character?.expressionMap ?? null"
           :motion-map="chat.character?.motionMap ?? null"
           :interaction-state="interactionState"
@@ -367,16 +377,7 @@ async function deleteCharacter() {
                   })
                 }}</small>
               </div>
-              <div class="bubble">{{ m.content }}</div>
-              <button
-                v-if="m.role === 'assistant' && m.status === 'complete'"
-                class="message-read"
-                type="button"
-                :disabled="voice.active || chat.busy"
-                @click="voice.replay(m.content)"
-              >
-                ▶ อ่านคำตอบนี้
-              </button>
+              <div class="bubble">{{ m.role === "assistant" ? assistantDisplayText(m.content) : m.content }}</div>
               <small v-if="m.status === 'interrupted'" class="muted"
                 >คำตอบนี้ถูกหยุดก่อนจบ</small
               >
@@ -389,6 +390,7 @@ async function deleteCharacter() {
             </article>
           </div>
           <VoiceControls />
+          <VisionControls />
           <form class="composer" @submit.prevent="send">
             <textarea
               v-model="text"

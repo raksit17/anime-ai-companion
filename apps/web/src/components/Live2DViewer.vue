@@ -10,6 +10,7 @@ import { createViewer } from "../services/live2d-adapter";
 const props = defineProps<{
   modelPath: string | null;
   mouthOpen?: number;
+  motion?: { group:string;index:number;revision:number } | null;
   emotion: string;
   expressionMap: Record<string, string> | null;
   motionMap: MotionMap | null;
@@ -23,9 +24,35 @@ const status = ref<"empty" | "loading" | "ready" | "error">("empty");
 let viewer: Live2DViewerHandle | undefined;
 let controller: AbortController | undefined;
 let generation = 0;
-<<<<<<< HEAD
+let mouthTestTimer: ReturnType<typeof setTimeout> | undefined;
+const availableMotions = ref<Record<string, number>>({});
+const selectedMotion = ref("TapBody");
+const selectedIndex = ref(0);
+const testingMouth = ref(false);
+function testMouth() {
+  if (!viewer) return;
+  if (mouthTestTimer) clearTimeout(mouthTestTimer);
+  testingMouth.value = true;
+  viewer.setMouthOpen(1);
+  mouthTestTimer = setTimeout(() => {
+    testingMouth.value = false;
+    viewer?.setMouthOpen(props.mouthOpen ?? 0);
+  }, 1500);
+}
+async function previewMotion() {
+  try { await viewer?.playMotion(selectedMotion.value, selectedIndex.value); }
+  catch (cause) { error.value = String(cause); }
+}
+
+async function applyAction(action: { expression?: string; motion?: string }) {
+  if (viewer) await viewer.action(action.expression, action.motion);
+}
+defineExpose({ applyAction });
 
 function stopViewer() {
+  if (mouthTestTimer) clearTimeout(mouthTestTimer);
+  testingMouth.value = false;
+  availableMotions.value = {};
   controller?.abort();
   controller = undefined;
   viewer?.destroy();
@@ -92,6 +119,7 @@ watch(
       }
 <<<<<<< HEAD
       viewer = next;
+      availableMotions.value = next.inspectMotions();
       await next.emotion(props.emotion, props.expressionMap ?? {});
       next.setMouthOpen(props.mouthOpen ?? 0);
       if (!error.value) status.value = "ready";
@@ -129,16 +157,12 @@ watch(
   () => void applyEmotion(),
 );
 watch(
-  () => props.interactionState,
-  () => syncInteractionState(),
->>>>>>> origin/feature/emotional-live2d-chat
+  () => props.motion,
+  value => { if (value) void viewer?.playMotion(value.group,value.index).catch(cause => { error.value = String(cause); }); },
 );
 watch(
   () => props.mouthOpen,
-  (value) => {
-    if (props.interactionState !== "responding")
-      viewer?.setMouthOpen(value ?? 0);
-  },
+  (value) => { if (!testingMouth.value) viewer?.setMouthOpen(value ?? 0); },
 );
 onBeforeUnmount(() => {
   generation++;
@@ -154,6 +178,15 @@ onBeforeUnmount(() => {
 <template>
   <div ref="host" class="live-stage" :data-live2d-status="status">
     <canvas ref="canvas" :class="{ 'canvas-hidden': status !== 'ready' }" />
+    <div v-if="status === 'ready'" class="live2d-debug" style="position:absolute;bottom:8px;left:8px;z-index:10;display:flex;gap:4px;align-items:center;flex-wrap:wrap;background:#ffffffd9;padding:4px;border-radius:6px">
+      <button type="button" @click="testMouth">ทดสอบปาก 1.5s</button>
+      <select v-model="selectedMotion" aria-label="Motion group">
+        <option v-for="(_, key) in availableMotions" :key="key" :value="key">{{ key }}</option>
+      </select>
+      <input v-model.number="selectedIndex" type="number" min="0" :max="Math.max(0,(availableMotions[selectedMotion] ?? 1)-1)" style="width:46px" aria-label="Motion index" />
+      <button type="button" @click="previewMotion">ทดสอบ Motion</button>
+      <small>เสียงจริงเท่านั้นจึงทำ Lip Sync อัตโนมัติ</small>
+    </div>
     <div v-if="status !== 'ready'" class="placeholder" role="status">
       <div class="orb">✦</div>
       <h2>{{ status === "loading" ? "กำลังโหลด Live2D…" : status === "error" ? "โหลด Live2D ไม่สำเร็จ" : "พื้นที่ตัวละครของคุณ" }}</h2>
