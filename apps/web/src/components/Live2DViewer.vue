@@ -17,6 +17,11 @@ let viewer: Live2DViewerHandle | undefined;
 let controller: AbortController | undefined;
 let generation = 0;
 
+async function applyAction(action: { expression?: string; motion?: string }) {
+  if (viewer) await viewer.action(action.expression, action.motion);
+}
+defineExpose({ applyAction });
+
 function stopViewer() {
   controller?.abort();
   controller = undefined;

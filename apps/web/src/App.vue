@@ -8,7 +8,10 @@ import { useChat } from "./stores/chat";
 import { api } from "./api";
 import Live2DViewer from "./components/Live2DViewer.vue";
 import type { Character } from "@companion/contracts";
+import { assistantDisplayText } from "./services/speech-segments";
 const voice = useVoice();
+const live2d = ref<{ applyAction: (action: { expression?: string; motion?: string }) => Promise<void> }>();
+voice.setActionHandler((action) => live2d.value?.applyAction(action) ?? Promise.resolve());
 const chat = useChat(),
   text = ref(""),
   tab = ref("chat"),
@@ -126,6 +129,7 @@ async function send() {
   if (voice.active) return;
   const value = text.value.trim();
   if (!value) return;
+  if (voice.autoSpeak) void voice.preparePlayback();
   text.value = "";
   await chat.send(value);
 }
@@ -265,6 +269,7 @@ async function deleteCharacter() {
           </button>
         </div>
         <Live2DViewer
+          ref="live2d"
           :mouth-open="voice.mouthOpen"
           :key="chat.character?.id"
           :model-path="chat.character?.modelPath ?? null"
@@ -327,7 +332,7 @@ async function deleteCharacter() {
                   })
                 }}</small>
               </div>
-              <div class="bubble">{{ m.content }}</div>
+              <div class="bubble">{{ m.role === "assistant" ? assistantDisplayText(m.content) : m.content }}</div>
               <small v-if="m.status === 'interrupted'" class="muted"
                 >คำตอบนี้ถูกหยุดก่อนจบ</small
               >

@@ -3,6 +3,7 @@ import * as PIXI from "pixi.js";
 export type Live2DViewerHandle = {
   setMouthOpen(value: number): void;
   emotion(name: string, map: Record<string, string>): Promise<void>;
+  action(expression?: string, motion?: string): Promise<void>;
   destroy(): void;
 };
 
@@ -199,6 +200,16 @@ export async function createViewer(
       async emotion(name, map) {
         const expression = map[name];
         if (expression) await loadedModel.expression(expression);
+      },
+      async action(expression, motion) {
+        const settings = internal.settings as {
+          expressions?: Record<string, unknown>;
+          motions?: Record<string, unknown[]>;
+        };
+        if (expression && settings.expressions?.[expression])
+          await loadedModel.expression(expression);
+        if (motion && settings.motions?.[motion]?.length)
+          await loadedModel.motion(motion);
       },
       destroy: dispose,
     };
