@@ -65,6 +65,13 @@ export const useVoice = defineStore("voice", () => {
     try {
       error.value = "";
       health.value = await voiceHealth(AbortSignal.timeout(6000));
+      if (
+        health.value.tts_engine === "moss" &&
+        health.value.tts_languages.includes("en")
+      ) {
+        ttsLanguage.value = "en";
+        return;
+      }
       if (!health.value.tts_languages.includes(ttsLanguage.value))
         ttsLanguage.value = health.value.tts_languages[0] ?? "th";
     } catch (e) {
