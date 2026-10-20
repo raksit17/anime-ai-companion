@@ -111,6 +111,36 @@ it("double click does not start two recorders", async () => {
   expect(f.start).toHaveBeenCalledTimes(1);
   voice.cancel();
 });
+it("sends English TTS language for English-only replies even if Thai is selected", async () => {
+  const voice = useVoice();
+  voice.ttsLanguage = "th";
+  await voice.replay("Okay, Yun is ready. *Pokes your cheek playfully*");
+  expect(f.synthesize).toHaveBeenCalledWith(
+    expect.stringContaining("Okay, Yun is ready"),
+    "en",
+    expect.any(AbortSignal),
+  );
+});
+it("sends Thai TTS language for Thai replies even if English is selected", async () => {
+  const voice = useVoice();
+  voice.ttsLanguage = "en";
+  await voice.replay("สวัสดีค่ะ วันนี้เป็นอย่างไรบ้าง");
+  expect(f.synthesize).toHaveBeenCalledWith(
+    expect.stringContaining("สวัสดีค่ะ"),
+    "th",
+    expect.any(AbortSignal),
+  );
+});
+it("preserves other explicit TTS languages", async () => {
+  const voice = useVoice();
+  voice.ttsLanguage = "ja";
+  await voice.replay("Hello world");
+  expect(f.synthesize).toHaveBeenCalledWith(
+    expect.any(String),
+    "ja",
+    expect.any(AbortSignal),
+  );
+});
 it("long Thai text keeps combining characters and is never truncated", () => {
   const text = "สวัสดีครับ วันนี้เรามาคุยกันเรื่องโปรเจกต์ ".repeat(30);
   const chunks = speechChunks(text);
