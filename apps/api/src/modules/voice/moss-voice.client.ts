@@ -29,7 +29,9 @@ export class MossVoiceClient {
     headers.set("X-API-Key", this.key);
     let response: Response;
     try {
+      console.debug("MOSS Voice Studio request", path, options);
       response = await fetch(this.url + path, { ...options, headers, signal });
+      console.debug("MOSS Voice Studio response", path, response.status, response.statusText);
     } catch (error) {
       if (signal.aborted) throw error;
       throw new ServiceUnavailableException("MOSS Voice Studio unavailable at " + this.url);
@@ -113,8 +115,8 @@ export class MossVoiceClient {
         if (declared > 25 * 1024 * 1024) throw new BadGatewayException("MOSS WAV exceeds 25 MB");
         const bytes = Buffer.from(await audio.arrayBuffer());
         if (bytes.length < 12 || bytes.length > 25 * 1024 * 1024 ||
-            bytes.toString("ascii", 0, 4) !== "RIFF" ||
-            bytes.toString("ascii", 8, 12) !== "WAVE") {
+          bytes.toString("ascii", 0, 4) !== "RIFF" ||
+          bytes.toString("ascii", 8, 12) !== "WAVE") {
           throw new BadGatewayException("MOSS returned invalid WAV audio");
         }
         return bytes;
