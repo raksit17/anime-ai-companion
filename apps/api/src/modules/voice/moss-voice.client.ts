@@ -19,6 +19,8 @@ export class MossVoiceClient {
   private readonly url = (process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001").replace(/\/$/, "");
   private readonly key = process.env.VOICE_STUDIO_API_KEY ?? "";
   private readonly defaultVoice = process.env.VOICE_STUDIO_VOICE_ID ?? "";
+  // Chatterbox-Turbo supports English only; Thai jobs keep MOSS defaults.
+  private readonly englishEngine = process.env.VOICE_STUDIO_EN_ENGINE?.trim() || "chatterbox-turbo";
   private chatterboxEnglishVoiceId = "";
 
   private async call(path: string, options: RequestInit, signal: AbortSignal): Promise<Response> {
@@ -86,6 +88,9 @@ export class MossVoiceClient {
       throw new HttpException("MOSS Voice Studio supports Thai and English only", 400);
     }
     signal.throwIfAborted();
+    if (language === "en" && !["moss", "chatterbox-turbo"].includes(this.englishEngine)) {
+      throw new ServiceUnavailableException("VOICE_STUDIO_EN_ENGINE must be moss or chatterbox-turbo");
+    }
     const response = await this.call("/v1/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -93,6 +98,14 @@ export class MossVoiceClient {
         text,
         language: language === "th" ? "Thai" : "English",
         voice_id: voiceId || await this.voiceId(language, signal),
+        ...(language === "en" ? {
+          engine: this.englishEngine,
+          model_id: null,
+          voice_model_id: null,
+          temperature: 1.7,
+          top_k: 25,
+          top_p: 0.8,
+        } : {}),
       }),
     }, signal);
     const started = (await response.json()) as { id?: string };
