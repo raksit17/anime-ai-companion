@@ -13,6 +13,15 @@ import {
 import { speechChunks } from "../services/speech-chunks";
 import type { AnimationPlanV1, Emotion, Message } from "@companion/contracts";
 import { parseAssistantSegments, type AssistantSegment } from "../services/speech-segments";
+// Match the TTS language to the actual spoken text rather than the UI default.
+// Keep explicitly selected non-Thai/English languages (e.g. Japanese) unchanged.
+function languageForSpeech(text: string, preferred: string): string {
+  if (preferred !== "th" && preferred !== "en") return preferred;
+  if (/[\u0E00-\u0E7F]/.test(text)) return "th";
+  if (/[A-Za-z]/.test(text)) return "en";
+  return preferred;
+}
+
 export type VoiceState =
   | "idle"
   | "requesting"
@@ -129,7 +138,7 @@ export const useVoice = defineStore("voice", () => {
 
         const wav = await synthesize(
           chunk,
-          ttsLanguage.value,
+          languageForSpeech(chunk, ttsLanguage.value),
           combined,
         );
 
