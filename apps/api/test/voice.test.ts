@@ -22,6 +22,17 @@ const calls: any[] = [];
           return { text: "สวัสดี", language, duration: 1 };
         },
         synthesize: async () => wav,
+        openSpeechStream: async () => ({
+          response: new Response(new Uint8Array([1, 0, 2, 0, 3, 0]), {
+            headers: {
+              "content-type": "application/octet-stream",
+              "x-audio-encoding": "pcm_s16le",
+              "x-sample-rate": "48000",
+              "x-channels": "1",
+            },
+          }),
+          release: () => {},
+        }),
       },
     },
   ],
@@ -116,4 +127,26 @@ test("GPU gate fails closed after unconfirmed cancellation", async () => {
   const gate = new ResourceGate();
   gate.block("Restart services");
   await assert.rejects(gate.acquire(new AbortController().signal), /Restart/);
+});
+
+test("native MOSS speech endpoint proxies streaming PCM bytes and headers", async () => {
+  const app = await NestFactory.create(TestModule, { logger: false });
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true, whitelist: true, forbidNonWhitelisted: true,
+  }));
+  try {
+    await app.listen(0, "127.0.0.1");
+    const result = await fetch((await app.getUrl()) + "/v1/voice/synthesize/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "สวัสดีค่ะ", language: "th" }),
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get("x-audio-encoding"), "pcm_s16le");
+    assert.equal(result.headers.get("x-sample-rate"), "48000");
+    assert.equal(result.headers.get("x-channels"), "1");
+    assert.deepEqual([...new Uint8Array(await result.arrayBuffer())], [1, 0, 2, 0, 3, 0]);
+  } finally {
+    await app.close();
+  }
 });

@@ -22,6 +22,8 @@ const f = vi.hoisted(() => ({
   stopPlayback: vi.fn(),
   transcribe: vi.fn(),
   synthesize: vi.fn(),
+  synthesizePcmStream: vi.fn(),
+  playPcmStream: vi.fn(),
 }));
 vi.mock("../src/stores/chat", () => ({ useChat: () => f.chat }));
 vi.mock("../src/composables/useVoiceRecorder", () => ({
@@ -31,6 +33,7 @@ vi.mock("../src/composables/useVoicePlayback", () => ({
   useVoicePlayback: () => ({
     unlock: f.unlock,
     play: f.play,
+    playPcmStream: f.playPcmStream,
     stop: f.stopPlayback,
     dispose: vi.fn(),
     mouthOpen: 0,
@@ -39,6 +42,7 @@ vi.mock("../src/composables/useVoicePlayback", () => ({
 vi.mock("../src/services/voice.api", () => ({
   transcribe: f.transcribe,
   synthesize: f.synthesize,
+  synthesizePcmStream: f.synthesizePcmStream,
   voiceHealth: vi.fn(),
 }));
 let streamListener: ((e: { type: string; requestId: string; delta?: string; content?: string }) => void) | undefined;
@@ -58,6 +62,8 @@ beforeEach(() => {
   });
   f.chat.sendAndWait.mockResolvedValue({ content: "พักสักหน่อยนะ" });
   f.synthesize.mockResolvedValue(new Blob(["wav"]));
+  f.synthesizePcmStream.mockResolvedValue(new ReadableStream());
+  f.playPcmStream.mockResolvedValue(undefined);
   f.play.mockResolvedValue(undefined);
 });
 it("voice pipeline transcribes, uses the existing chat, then plays once", async () => {
@@ -228,4 +234,60 @@ it("aborts stream speech playback on cancellation", async () => {
   await vi.waitFor(() => expect(f.synthesize).toHaveBeenCalled());
   streamListener!({ type: "error", requestId: "request-3" });
   expect(voice.state).toBe("idle");
+});
+
+it("uses native 48k PCM streaming for Thai if SGLang is ready", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = true;
+  voice.ttsLanguage = "th";
+  voice.health = {
+    status: "ok", tts_engine: "moss", model_state: "ready",
+    tts_languages: ["th", "en"],
+    streaming_ready: true, streaming_languages: ["th"],
+  };
+  streamListener!({ type: "start", requestId: "pcm-1" });
+  streamListener!({ type: "delta", requestId: "pcm-1", delta: "English:\nHello!\n\nThai:\nสวัสดีค่ะ!" });
+  await vi.waitFor(() => expect(f.synthesizePcmStream).toHaveBeenCalledWith(
+    "สวัสดีค่ะ!", "th", expect.any(AbortSignal),
+  ));
+  await vi.waitFor(() => expect(f.playPcmStream).toHaveBeenCalledTimes(1));
+  streamListener!({ type: "complete", requestId: "pcm-1", content: "" });
+  await vi.waitFor(() => expect(voice.state).toBe("idle"));
+  expect(f.synthesize).not.toHaveBeenCalled();
+});
+it("retains the original Chatterbox English WAV engine even if Thai PCM streaming is ready", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = true;
+  voice.ttsLanguage = "en";
+  voice.health = {
+    status: "ok", tts_engine: "moss", model_state: "ready",
+    tts_languages: ["th", "en"],
+    streaming_ready: true, streaming_languages: ["th"],
+  };
+  streamListener!({ type: "start", requestId: "wav-en" });
+  streamListener!({ type: "delta", requestId: "wav-en", delta: "English:\nWelcome back!" });
+  await vi.waitFor(() => expect(f.synthesize).toHaveBeenCalledWith(
+    "Welcome back!", "en", expect.any(AbortSignal), true,
+  ));
+  expect(f.synthesizePcmStream).not.toHaveBeenCalled();
+  streamListener!({ type: "complete", requestId: "wav-en", content: "" });
+});
+it("falls back to MOSS WAV when PCM cannot open before playback", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = true;
+  voice.ttsLanguage = "th";
+  voice.health = {
+    status: "ok", tts_engine: "moss", model_state: "ready",
+    tts_languages: ["th", "en"],
+    streaming_ready: true, streaming_languages: ["th"],
+  };
+  f.synthesizePcmStream.mockRejectedValueOnce(new Error("stream unavailable"));
+  streamListener!({ type: "start", requestId: "pcm-fallback" });
+  streamListener!({ type: "delta", requestId: "pcm-fallback", delta: "Thai:\nสวัสดีค่ะ!" });
+  await vi.waitFor(() => expect(f.synthesize).toHaveBeenCalledWith(
+    "สวัสดีค่ะ!", "th", expect.any(AbortSignal), true,
+  ));
+  await vi.waitFor(() => expect(f.play).toHaveBeenCalledTimes(1));
+  expect(f.playPcmStream).not.toHaveBeenCalled();
+  streamListener!({ type: "complete", requestId: "pcm-fallback", content: "" });
 });

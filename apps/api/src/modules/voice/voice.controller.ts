@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  BadGatewayException,
   Body,
   Controller,
   Get,
@@ -57,6 +58,62 @@ export class VoiceController {
       task.dispose();
     }
   }
+  @Post("synthesize/stream")
+  async synthesizeStream(
+    @Body() body: SynthesizeDto,
+    @Res() res: Response,
+  ) {
+    const task = cancellation(res, 330000);
+    let release = () => {};
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const upstream = await this.voice.openSpeechStream(
+        body.text.trim(),
+        body.language,
+        task.signal,
+      );
+      release = upstream.release;
+      reader = upstream.response.body?.getReader();
+      if (!reader) throw new BadGatewayException("MOSS streaming returned no audio data");
+      res.status(200);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("X-Audio-Encoding", "pcm_s16le");
+      res.setHeader("X-Sample-Rate", "48000");
+      res.setHeader("X-Channels", "1");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Accel-Buffering", "no");
+      while (true) {
+        task.signal.throwIfAborted();
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value?.byteLength) continue;
+        if (!res.write(Buffer.from(value))) {
+          await new Promise<void>((resolve, reject) => {
+            const cleanup = () => {
+              res.off("drain", drain);
+              res.off("close", close);
+            };
+            const drain = () => { cleanup(); resolve(); };
+            const close = () => { cleanup(); reject(new Error("Client disconnected")); };
+            res.once("drain", drain);
+            res.once("close", close);
+          });
+        }
+      }
+      res.end();
+    } catch (error) {
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      throw error;
+    } finally {
+      await reader?.cancel().catch(() => undefined);
+      release();
+      task.dispose();
+    }
+  }
+
   @Post("synthesize") async synthesize(
     @Body() body: SynthesizeDto,
     @Res({ passthrough: true }) res: Response,

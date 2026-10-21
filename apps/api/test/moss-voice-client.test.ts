@@ -95,3 +95,67 @@ test("MOSS jobs route bilingual English to Chatterbox and Thai to MOSS with lang
     }
   }
 });
+
+test("native MOSS stream uses SGLang PCM only for a moss engine; preserves Chatterbox", async () => {
+  const keys = [
+    "VOICE_STUDIO_URL", "VOICE_STUDIO_API_KEY", "VOICE_STUDIO_EN_ENGINE",
+    "VOICE_STUDIO_TH_ENGINE", "VOICE_STUDIO_VOICE_ID", "VOICE_STUDIO_TH_VOICE_ID",
+    "VOICE_STUDIO_EN_VOICE_ID",
+  ] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const previousFetch = globalThis.fetch;
+  const requests: { url: string; body?: any }[] = [];
+  try {
+    process.env.VOICE_STUDIO_URL = "http://127.0.0.1:8001";
+    process.env.VOICE_STUDIO_API_KEY = "test-key";
+    process.env.VOICE_STUDIO_EN_ENGINE = "chatterbox-turbo";
+    process.env.VOICE_STUDIO_TH_ENGINE = "moss";
+    delete process.env.VOICE_STUDIO_VOICE_ID;
+    delete process.env.VOICE_STUDIO_TH_VOICE_ID;
+    delete process.env.VOICE_STUDIO_EN_VOICE_ID;
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ url: path, body });
+      if (path === "/v1/stream/status") {
+        return new Response(JSON.stringify({ configured: true, ready: true }));
+      }
+      if (path === "/v1/voices") {
+        return new Response(JSON.stringify({ items: [] }));
+      }
+      if (path === "/v1/stream") {
+        return new Response(new Uint8Array([0, 0, 255, 127]), {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-Audio-Encoding": "pcm_s16le",
+            "X-Sample-Rate": "48000",
+            "X-Channels": "1",
+          },
+        });
+      }
+      throw new Error(path);
+    };
+    const client = new MossVoiceClient();
+    const signal = new AbortController().signal;
+    assert.deepEqual(client.nativeStreamingLanguages(), ["th"]);
+    assert.equal(await client.streamingAvailable(signal), true);
+    const response = await client.streamSpeech("*ยิ้ม* สวัสดีค่ะ", "th", signal);
+    assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [0, 0, 255, 127]);
+    const payload = requests.find((r) => r.url === "/v1/stream")?.body;
+    assert.equal(payload.text, "สวัสดีค่ะ");
+    assert.equal(payload.language, "Thai");
+    assert.equal(payload.voice_id, null);
+    await assert.rejects(
+      client.streamSpeech("Hello", "en", signal),
+      /does not support the SGLang streaming endpoint/,
+    );
+    assert.equal(requests.filter((r) => r.url === "/v1/stream").length, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const key of keys) {
+      const value = saved[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
