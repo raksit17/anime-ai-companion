@@ -222,6 +222,7 @@ it("does not generate streamed voice if Auto Speak is disabled", async () => {
 it("aborts stream speech playback on cancellation", async () => {
   const voice = useVoice();
   voice.autoSpeak = true;
+  voice.ttsLanguage = "en";
   streamListener!({ type: "start", requestId: "request-3" });
   streamListener!({ type: "delta", requestId: "request-3", delta: "English:\nHello there!" });
   await vi.waitFor(() => expect(f.synthesize).toHaveBeenCalled());
