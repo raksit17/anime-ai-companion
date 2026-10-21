@@ -59,10 +59,6 @@ onBeforeUnmount(() => void voice.dispose());
         </select></label
       >
     </div>
-    <label class="auto-speak-option">
-      <input v-model="voice.autoSpeak" type="checkbox" :disabled="voice.active || chat.busy" />
-      อ่านออกเสียงอัตโนมัติเมื่อส่งข้อความ
-    </label>
     <div class="voice-actions">
       <button
         v-if="voice.state === 'listening'"

@@ -50,6 +50,7 @@ export async function synthesize(
   text: string,
   language: string,
   signal: AbortSignal,
+  streaming = false,
 ) {
   return (
     await request(
@@ -57,7 +58,7 @@ export async function synthesize(
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, language }),
+        body: JSON.stringify({ text, language, streaming }),
       },
       signal,
     )

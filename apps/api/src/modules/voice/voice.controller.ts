@@ -67,6 +67,7 @@ export class VoiceController {
         body.text.trim(),
         body.language,
         task.signal,
+        body.streaming,
       );
       res.setHeader("Content-Type", "audio/wav");
       res.setHeader("Cache-Control", "no-store");

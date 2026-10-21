@@ -17,7 +17,7 @@ import { OllamaService } from "./ai/ollama.service";
 import { buildPrompt } from "./ai/prompt-builder";
 import { normalizeThaiFeminineEnding } from "./ai/text-style";
 import { SendDto } from "./dto";
-import { buildAnimationPlan } from "./animation/dialogue-parser";
+import { buildAnimationPlan, classifyEmotion } from "./animation/dialogue-parser";
 @WebSocketGateway({
   namespace: "/chat",
   cors: { origin: allowedOrigins() },
@@ -98,10 +98,9 @@ export class ChatGateway implements OnGatewayDisconnect {
         where: { conversationId: conv.id, requestId: dto.requestId },
       });
       if (duplicate) throw new Error("คำขอนี้ถูกบันทึกแล้ว กรุณาโหลดประวัติ");
-      const englishContent = await this.ai.translateToEnglish(
-        dto.content.trim(),
-        signal,
-      );
+      const englishContent = /[\u0E00-\u0E7F]/.test(dto.content)
+        ? await this.ai.translateToEnglish(dto.content.trim(), signal)
+        : dto.content.trim();
       await this.db.message.create({
         data: {
           conversationId: conv.id,
@@ -128,7 +127,7 @@ export class ChatGateway implements OnGatewayDisconnect {
       for (const previous of history) {
         if (!previous.englishContent) {
           const englishReply = previous.content.match(
-            /English:\s*([\s\S]*?)\n\s*Thai translation:/i,
+            /English:\s*([\s\S]*?)\n\s*Thai(?: translation)?:/i,
           )?.[1]?.trim();
           const source = englishReply ?? previous.content;
           previous.englishContent = /[\u0e00-\u0e7f]/.test(source)
@@ -149,11 +148,17 @@ export class ChatGateway implements OnGatewayDisconnect {
         /[\u0e00-\u0e7f]/.test(value)
           ? this.ai.translateToEnglish(value, signal)
           : Promise.resolve(value);
-      const personality = await translateThai(conv.character.personality);
-      const characterPrompt = await translateThai(conv.character.systemPrompt);
-      const translatedMemories = [];
-      for (const memory of memories)
-        translatedMemories.push(await translateThai(memory.content));
+      // Qwen can read Thai profile data: skip several extra Ollama calls by default.
+      const translateProfile = process.env.CHAT_TRANSLATE_PROFILE === "true";
+      const personality = translateProfile
+        ? await translateThai(conv.character.personality)
+        : conv.character.personality;
+      const characterPrompt = translateProfile
+        ? await translateThai(conv.character.systemPrompt)
+        : conv.character.systemPrompt;
+      const translatedMemories = translateProfile
+        ? await Promise.all(memories.map((m) => translateThai(m.content)))
+        : memories.map((m) => m.content);
 
       for await (const delta of this.ai.stream(
         buildPrompt(
@@ -169,9 +174,15 @@ export class ChatGateway implements OnGatewayDisconnect {
       if (!content.trim()) throw new Error("โมเดลตอบข้อความว่าง");
       content = normalizeThaiFeminineEnding(content);
       const assistantEnglishContent = content.match(
-        /English:\s*([\s\S]*?)\n\s*Thai translation:/i,
+        /English:\s*([\s\S]*?)\n\s*Thai(?: translation)?:/i,
       )?.[1]?.trim();
-      const emotion = await this.ai.emotion(dto.content.trim(), content, signal);
+      // Fast mode removes a second LLM pass after streaming the answer.
+      const expression = [...content.matchAll(/\*([^*\n]+)\*/g)]
+        .map((match) => classifyEmotion(match[1] ?? ""))
+        .find((value) => value !== "neutral");
+      const emotion = process.env.CHAT_EMOTION_MODE === "fast"
+        ? (expression ?? "neutral")
+        : await this.ai.emotion(dto.content.trim(), content, signal);
       signal.throwIfAborted();
       const message = await this.db.message.create({
         data: {

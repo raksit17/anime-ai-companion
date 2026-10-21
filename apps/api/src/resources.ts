@@ -3,6 +3,9 @@ import { Global, Injectable, Module } from "@nestjs/common";
 @Injectable()
 export class ResourceGate {
   private failure: string | undefined;
+  assertHealthy() {
+    if (this.failure) throw new Error(this.failure);
+  }
   block(reason: string) {
     this.failure = reason;
   }

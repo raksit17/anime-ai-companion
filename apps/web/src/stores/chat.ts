@@ -11,7 +11,21 @@ import type {
   Emotion,
   ChatEvent,
 } from "@companion/contracts";
+export type ChatStreamEvent =
+  | { type: "start"; requestId: string }
+  | { type: "delta"; requestId: string; delta: string }
+  | { type: "complete"; requestId: string; content: string }
+  | { type: "error"; requestId: string };
+
 export const useChat = defineStore("chat", () => {
+  const streamListeners = new Set<(event: ChatStreamEvent) => void>();
+  function onStream(listener: (event: ChatStreamEvent) => void) {
+    streamListeners.add(listener);
+    return () => streamListeners.delete(listener);
+  }
+  function emitStream(event: ChatStreamEvent) {
+    for (const listener of streamListeners) listener(event);
+  }
   const animation = useAnimation();
   const characters = ref<Character[]>([]),
     character = ref<Character | null>(null),
@@ -143,7 +157,10 @@ export const useChat = defineStore("chat", () => {
         "เชื่อมต่อ Backend ไม่ได้ ตรวจพอร์ต 3001 และ Local API token";
     });
     socket.on("chat:delta", (e: ChatEvent) => {
-      if (matches(e)) partial.value += e.delta ?? "";
+      if (matches(e) && e.delta) {
+        partial.value += e.delta;
+        emitStream({ type: "delta", requestId: e.requestId, delta: e.delta });
+      }
     });
     socket.on("chat:emotion", (e: ChatEvent) => {
       if (matches(e) && e.emotion) emotion.value = e.emotion;
@@ -151,14 +168,14 @@ export const useChat = defineStore("chat", () => {
     socket.on("chat:complete", (e: ChatEvent) => {
       if (!matches(e)) return;
       if (e.message) {
+        assistantResponse.value = e.message;
+        emitStream({ type: "complete", requestId: e.requestId, content: e.message.content });
         if (e.message.animationPlan) void animation.play(e.message.animationPlan).catch(() => {});
         settle(e.message);
+      } else {
+        emitStream({ type: "error", requestId: e.requestId });
+        settle(undefined, new Error("ไม่พบคำตอบจากแชต"));
       }
-      if (e.message) {
-        assistantResponse.value = e.message;
-        settle(e.message);
-      }
-      else settle(undefined, new Error("ไม่พบคำตอบจากแชต"));
       busy.value = false;
       partial.value = "";
       void guard(async () => {
@@ -171,6 +188,7 @@ export const useChat = defineStore("chat", () => {
       busy.value = false;
       partial.value = "";
       error.value = e.error ?? "เกิดข้อผิดพลาด";
+      emitStream({ type: "error", requestId: e.requestId });
       settle(undefined, new Error(error.value));
       void loadMessages().catch(() => {});
     });
@@ -191,6 +209,7 @@ export const useChat = defineStore("chat", () => {
       busy.value = true;
       partial.value = "";
       error.value = "";
+      emitStream({ type: "start", requestId });
       let completion: Promise<Message> | undefined;
       if (waitSignal) {
         const id = requestId;
@@ -268,6 +287,7 @@ export const useChat = defineStore("chat", () => {
     send,
     sendAndWait,
     stop,
+    onStream,
     refreshLists,
   };
 });

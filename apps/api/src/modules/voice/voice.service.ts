@@ -251,8 +251,13 @@ export class VoiceService {
     text: string,
     language: string,
     signal: AbortSignal,
+    streaming = false,
   ): Promise<Buffer> {
-    const release = await this.gate.acquire(signal);
+    // On a small GPU, parallel Ollama and MOSS may exhaust VRAM; opt in explicitly.
+    const parallel = streaming && process.env.VOICE_TTS_PROVIDER === "moss" &&
+      process.env.VOICE_STREAM_CONCURRENT_GPU === "true";
+    this.gate.assertHealthy();
+    const release = parallel ? () => {} : await this.gate.acquire(signal);
     try {
       if (process.env.VOICE_TTS_PROVIDER === "moss")
         return await this.moss.synthesize(text, language, undefined, signal);

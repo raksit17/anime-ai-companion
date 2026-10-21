@@ -91,7 +91,7 @@ onMounted(async () => {
       } finally {
         publishing = false;
       }
-    }, 50);
+    }, 120);
   }
   await chat.init();
 });
@@ -172,8 +172,8 @@ async function send() {
   if (voice.autoSpeak) void voice.preparePlayback();
   text.value = "";
   await chat.guard(async () => {
-    const reply = await chat.sendAndWait(value, AbortSignal.timeout(320000));
-    if (voice.autoSpeak) await voice.replay(reply.content);
+    // Auto Speak queues completed sentences during chat:delta; no duplicate replay.
+    await chat.sendAndWait(value, AbortSignal.timeout(320000));
   });
 }
 async function saveMemory() {
