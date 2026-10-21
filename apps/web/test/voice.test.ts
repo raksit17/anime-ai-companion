@@ -62,7 +62,7 @@ beforeEach(() => {
   });
   f.chat.sendAndWait.mockResolvedValue({ content: "พักสักหน่อยนะ" });
   f.synthesize.mockResolvedValue(new Blob(["wav"]));
-  f.synthesizePcmStream.mockResolvedValue(new ReadableStream());
+  f.synthesizePcmStream.mockResolvedValue({ stream: new ReadableStream(), sampleRate: 48000 });
   f.playPcmStream.mockResolvedValue(undefined);
   f.play.mockResolvedValue(undefined);
 });
@@ -290,4 +290,28 @@ it("falls back to MOSS WAV when PCM cannot open before playback", async () => {
   await vi.waitFor(() => expect(f.play).toHaveBeenCalledTimes(1));
   expect(f.playPcmStream).not.toHaveBeenCalled();
   streamListener!({ type: "complete", requestId: "pcm-fallback", content: "" });
+});
+
+it("selects Chatterbox PCM 24k for English Auto Speak when Turbo streaming is ready", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = true;
+  voice.ttsLanguage = "en";
+  voice.health = {
+    status: "ok", tts_engine: "moss", model_state: "ready",
+    tts_languages: ["th", "en"],
+    streaming_ready: true, streaming_languages: ["en"],
+  };
+  f.synthesizePcmStream.mockResolvedValueOnce({
+    stream: new ReadableStream(), sampleRate: 24000,
+  });
+  streamListener!({ type: "start", requestId: "turbo-pcm" });
+  streamListener!({ type: "delta", requestId: "turbo-pcm", delta: "English:\nWelcome back! [chuckle]" });
+  await vi.waitFor(() => expect(f.synthesizePcmStream).toHaveBeenCalledWith(
+    "Welcome back! [chuckle]", "en", expect.any(AbortSignal),
+  ));
+  await vi.waitFor(() => expect(f.playPcmStream).toHaveBeenCalledWith(
+    expect.any(ReadableStream), expect.any(AbortSignal), 24000,
+  ));
+  expect(f.synthesize).not.toHaveBeenCalled();
+  streamListener!({ type: "complete", requestId: "turbo-pcm", content: "" });
 });

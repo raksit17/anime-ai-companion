@@ -59,7 +59,8 @@ export class StreamingSpeechChunker {
     const raw = section.text;
     let end = final ? raw.length : -1;
     if (!final) {
-      const punctuation = /[.!?。！？]+(?:["”’)\]]*)?(?=\s|$)/g;
+      // Keep Chatterbox paralinguistic tags in the spoken sentence.
+      const punctuation = /[.!?。！？]+(?:["”’)\]]*)?(?:\s+\[[^\]\r\n]{1,40}\])*(?=\s|$)/g;
       let match: RegExpExecArray | null;
       while ((match = punctuation.exec(raw))) {
         if (punctuation.lastIndex > this.consumed) end = punctuation.lastIndex;

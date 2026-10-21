@@ -78,7 +78,7 @@ export class VoiceController {
       res.status(200);
       res.setHeader("Content-Type", "application/octet-stream");
       res.setHeader("X-Audio-Encoding", "pcm_s16le");
-      res.setHeader("X-Sample-Rate", "48000");
+      res.setHeader("X-Sample-Rate", upstream.response.headers.get("X-Sample-Rate") || "48000");
       res.setHeader("X-Channels", "1");
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("X-Accel-Buffering", "no");

@@ -105,8 +105,9 @@ export function useVoicePlayback() {
    * SGLang/MOSS native stream: signed little-endian 16-bit mono PCM at 48kHz.
    * Schedule short AudioBuffers on one AudioContext while bytes are still arriving.
    */
-  async function playPcmStream(stream: ReadableStream<Uint8Array>, signal: AbortSignal) {
+  async function playPcmStream(stream: ReadableStream<Uint8Array>, signal: AbortSignal, sampleRate = 48000) {
     signal.throwIfAborted();
+    if (![24000, 48000].includes(sampleRate)) throw new Error("Unsupported PCM sample rate");
     await unlock();
     stop();
     signal.throwIfAborted();
@@ -165,7 +166,7 @@ export function useVoicePlayback() {
       if (bytes.byteLength % 2) throw new Error("Incomplete PCM sample");
       const samplesCount = bytes.byteLength / 2;
       if (!samplesCount) return;
-      const audio = ctx.createBuffer(1, samplesCount, 48000);
+      const audio = ctx.createBuffer(1, samplesCount, sampleRate);
       const channel = audio.getChannelData(0);
       const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
       for (let i = 0; i < samplesCount; i++) channel[i] = view.getInt16(i * 2, true) / 32768;

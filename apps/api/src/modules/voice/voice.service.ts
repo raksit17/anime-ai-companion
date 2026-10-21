@@ -215,11 +215,11 @@ export class VoiceService {
   async health(signal: AbortSignal) {
     if (process.env.VOICE_TTS_PROVIDER === "moss") {
       const health = await this.moss.health(signal);
-      const enabled = await this.moss.streamingAvailable(signal);
+      const streaming_languages = await this.moss.streamingReadyLanguages(signal);
       return {
         ...health,
-        streaming_ready: enabled,
-        streaming_languages: enabled ? this.moss.nativeStreamingLanguages() : [],
+        streaming_ready: streaming_languages.length > 0,
+        streaming_languages,
       };
     }
     if (localAiVoiceEnabled()) {

@@ -160,35 +160,45 @@ export class MossVoiceClient {
   nativeStreamingLanguages(): Array<"th" | "en"> {
     const languages: Array<"th" | "en"> = [];
     if (this.thaiEngine === "moss") languages.push("th");
-    if (this.englishEngine === "moss") languages.push("en");
+    if (["moss", "chatterbox-turbo"].includes(this.englishEngine)) languages.push("en");
     return languages;
   }
 
-  async streamingAvailable(signal: AbortSignal): Promise<boolean> {
+  async streamingReadyLanguages(signal: AbortSignal): Promise<Array<"th" | "en">> {
     try {
-      // Do not delay companion startup if an optional SGLang server is down.
       const probe = AbortSignal.any([signal, AbortSignal.timeout(1800)]);
       const response = await this.call("/v1/stream/status", {}, probe);
-      const status = await response.json() as { configured?: boolean; ready?: boolean };
-      return status.configured === true && status.ready === true;
+      const status = await response.json() as {
+        ready?: boolean;
+        engines?: { moss?: { ready?: boolean }; "chatterbox-turbo"?: { ready?: boolean } };
+      };
+      const languages: Array<"th" | "en"> = [];
+      if (this.thaiEngine === "moss" && (status.engines?.moss?.ready ?? status.ready)) {
+        languages.push("th");
+      }
+      if (this.englishEngine === "moss" && (status.engines?.moss?.ready ?? status.ready)) {
+        languages.push("en");
+      }
+      if (this.englishEngine === "chatterbox-turbo" &&
+          status.engines?.["chatterbox-turbo"]?.ready === true) {
+        languages.push("en");
+      }
+      return languages;
     } catch (error) {
       if (signal.aborted) throw error;
-      this.logger.warn("SGLang MOSS streaming is unavailable; keeping WAV synthesis");
-      return false;
+      this.logger.warn("MOSS streaming status unavailable; keeping WAV synthesis");
+      return [];
     }
   }
 
-  async streamSpeech(
-    text: string,
-    language: string,
-    signal: AbortSignal,
-  ): Promise<Response> {
+  async streamSpeech(text: string, language: string, signal: AbortSignal): Promise<Response> {
     if (language !== "th" && language !== "en") {
       throw new BadRequestException("Streaming speech supports Thai and English only");
     }
     if (!this.nativeStreamingLanguages().includes(language)) {
-      throw new HttpException("This voice engine does not support the SGLang streaming endpoint", 409);
+      throw new HttpException("This voice engine does not support streaming", 409);
     }
+    const engine = language === "en" ? this.englishEngine : this.thaiEngine;
     const cleaned = this.speechOnly(text, language);
     const voice = await this.voiceId(language, undefined, signal);
     const response = await this.call("/v1/stream", {
@@ -198,18 +208,20 @@ export class MossVoiceClient {
         text: cleaned,
         language: language === "th" ? "Thai" : "English",
         voice_id: voice,
-        temperature: 1.7,
-        top_p: 0.8,
-        top_k: 25,
+        engine,
       }),
     }, signal);
+
+    const expectedRate = engine === "chatterbox-turbo" ? "24000" : "48000";
     if (!response.body ||
         !response.headers.get("content-type")?.includes("application/octet-stream") ||
         response.headers.get("x-audio-encoding") !== "pcm_s16le" ||
-        response.headers.get("x-sample-rate") !== "48000" ||
+        response.headers.get("x-sample-rate") !== expectedRate ||
         response.headers.get("x-channels") !== "1") {
       await response.body?.cancel().catch(() => undefined);
-      throw new BadGatewayException("MOSS streaming returned unsupported audio; expected 48 kHz mono PCM s16le");
+      throw new BadGatewayException(
+        "Unsupported " + engine + " stream; expected mono PCM s16le at " + expectedRate + "Hz",
+      );
     }
     return response;
   }
