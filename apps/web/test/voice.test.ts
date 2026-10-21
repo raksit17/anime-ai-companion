@@ -12,6 +12,7 @@ const f = vi.hoisted(() => ({
     conversation: "c",
     messages: [{ role: "assistant", status: "complete", content: "สวัสดี" }],
     sendAndWait: vi.fn(),
+    onStream: vi.fn(),
   },
   start: vi.fn(),
   stop: vi.fn(),
@@ -40,10 +41,13 @@ vi.mock("../src/services/voice.api", () => ({
   synthesize: f.synthesize,
   voiceHealth: vi.fn(),
 }));
+let streamListener: ((e: { type: string; requestId: string; delta?: string; content?: string }) => void) | undefined;
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.resetAllMocks();
   f.chat.busy = false;
+  streamListener = undefined;
+  f.chat.onStream.mockImplementation((callback) => { streamListener = callback; return () => {}; });
   f.start.mockResolvedValue(undefined);
   f.stop.mockResolvedValue(new Blob(["voice"]));
   f.unlock.mockResolvedValue(undefined);
@@ -189,4 +193,38 @@ it("selects Thai translation explicitly when the Thai voice is selected", async 
     "สวัสดีนะ", "th", expect.any(AbortSignal),
   );
   expect(selectBilingualSpeech("English:\nHi\nThai:\nหวัดดี", "en")?.text).toBe("Hi");
+});
+
+it("begins voice synthesis on the first complete AI sentence before chat completion", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = true;
+  voice.ttsLanguage = "en";
+  streamListener!({ type: "start", requestId: "request-1" });
+  streamListener!({ type: "delta", requestId: "request-1", delta: "English:\n*Smiles.*\nHello there!" });
+  await vi.waitFor(() => expect(f.synthesize).toHaveBeenCalledWith(
+    "Hello there!", "en", expect.any(AbortSignal), true,
+  ));
+  expect(f.play).toHaveBeenCalledTimes(1);
+  streamListener!({ type: "delta", requestId: "request-1", delta: "\nNext sentence." });
+  streamListener!({ type: "complete", requestId: "request-1", content: "" });
+  await vi.waitFor(() => expect(f.play).toHaveBeenCalledTimes(2));
+  expect(f.synthesize).toHaveBeenCalledTimes(2);
+});
+it("does not generate streamed voice if Auto Speak is disabled", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = false;
+  streamListener!({ type: "start", requestId: "request-2" });
+  streamListener!({ type: "delta", requestId: "request-2", delta: "English:\nHello there!" });
+  streamListener!({ type: "complete", requestId: "request-2", content: "" });
+  await Promise.resolve();
+  expect(f.synthesize).not.toHaveBeenCalled();
+});
+it("aborts stream speech playback on cancellation", async () => {
+  const voice = useVoice();
+  voice.autoSpeak = true;
+  streamListener!({ type: "start", requestId: "request-3" });
+  streamListener!({ type: "delta", requestId: "request-3", delta: "English:\nHello there!" });
+  await vi.waitFor(() => expect(f.synthesize).toHaveBeenCalled());
+  streamListener!({ type: "error", requestId: "request-3" });
+  expect(voice.state).toBe("idle");
 });

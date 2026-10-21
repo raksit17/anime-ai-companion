@@ -11,6 +11,7 @@ export const emotions = [
 ] as const;
 @Injectable()
 export class OllamaService {
+  private readonly translationCache = new Map<string, string>();
   constructor(@Inject(LocalAiService) private localai: LocalAiService) {}
   async request(payload: object, signal: AbortSignal) {
     const r = await fetch(
@@ -34,6 +35,9 @@ export class OllamaService {
   }
   async translateToEnglish(content: string, signal: AbortSignal) {
     if (localAiEnabled()) return this.localai.translateToEnglish(content, signal);
+    if (!/[\u0E00-\u0E7F]/.test(content)) return content;
+    const cached = this.translationCache.get(content);
+    if (cached) return cached;
     const r = await this.request(
       {
         stream: false,
@@ -52,6 +56,12 @@ export class OllamaService {
     const data = (await r.json()) as any;
     const translation = String(data.message?.content ?? "").trim();
     if (!translation) throw new Error("โมเดลแปลข้อความไม่สำเร็จ");
+    if (content.length <= 4000) {
+      if (this.translationCache.size >= 128) {
+        this.translationCache.delete(this.translationCache.keys().next().value!);
+      }
+      this.translationCache.set(content, translation);
+    }
     return translation;
   }
   async *stream(
@@ -66,7 +76,7 @@ export class OllamaService {
       {
         messages,
         stream: true,
-        options: { num_ctx: 4096, num_predict: 500, temperature: 0.8 },
+        options: { num_ctx: 4096, num_predict: Math.max(100, Math.min(800, Number(process.env.OLLAMA_NUM_PREDICT || 350) || 350)), temperature: 0.8 },
       },
       signal,
     );

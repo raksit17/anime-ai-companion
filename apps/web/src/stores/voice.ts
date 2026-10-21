@@ -11,6 +11,8 @@ import {
   type VoiceHealth,
 } from "../services/voice.api";
 import { speechChunks } from "../services/speech-chunks";
+import { StreamingSpeechChunker, type ReadySpeech } from "../services/streaming-speech";
+import type { ChatStreamEvent } from "./chat";
 import type { AnimationPlanV1, Emotion, Message } from "@companion/contracts";
 import { parseAssistantSegments, selectBilingualSpeech, removeNarratedActions, type AssistantSegment } from "../services/speech-segments";
 // Match the TTS language to the actual spoken text rather than the UI default.
@@ -54,7 +56,6 @@ export const useVoice = defineStore("voice", () => {
     timer: ReturnType<typeof setInterval> | undefined,
     generation = 0,
     actionHandler: (action: Extract<AssistantSegment, { type: "action" }>) => Promise<void> = async () => {};
-  let lastAutoResponseId = "";
   function clearTimer() {
     if (timer) clearInterval(timer);
     timer = undefined;
@@ -62,6 +63,9 @@ export const useVoice = defineStore("voice", () => {
   function cancel() {
     generation++;
     controller?.abort();
+    streamSession?.controller.abort();
+    streamSession = undefined;
+    streamPlayback = undefined;
     controller = undefined;
     clearTimer();
     recorder.cancel();
@@ -222,54 +226,79 @@ export const useVoice = defineStore("voice", () => {
       if (typeof localStorage !== "undefined") localStorage.setItem("companion-auto-speak", "false");
     }
   }
-  async function autoPlay(message: { id: string; content: string; emotion?: string | null }) {
-    if (!autoSpeak.value || state.value !== "idle" || chat.busy) return;
-    const token = ++generation;
-    controller = new AbortController();
-    error.value = "";
-    try {
-      await playback.unlock();
-      if (token !== generation) return;
-      await speak(message.content, controller.signal, token, message);
-    } catch (e) {
-      fail(e, token);
+  type StreamSession = {
+    id: string;
+    token: number;
+    controller: AbortController;
+    chunker: StreamingSpeechChunker;
+    chain: Promise<void>;
+  };
+  let streamSession: StreamSession | undefined;
+  let streamPlayback: Promise<void> | undefined;
+
+  function enqueueSpeech(session: StreamSession, chunks: ReadySpeech[]) {
+    // One outstanding MOSS job at a time: prevents flooding its GPU queue.
+    for (const chunk of chunks) {
+      session.chain = session.chain.then(async () => {
+        session.controller.signal.throwIfAborted();
+        if (session.token !== generation) return;
+        state.value = "synthesizing";
+        progress.value = "กำลังสร้างเสียงขณะ AI ตอบ";
+        const wav = await synthesize(chunk.text, chunk.language, session.controller.signal, true);
+        session.controller.signal.throwIfAborted();
+        if (session.token !== generation) return;
+        state.value = "speaking";
+        await playback.play(wav, session.controller.signal);
+      }).catch((reason: unknown) => {
+        if (session.controller.signal.aborted || session.token !== generation) return;
+        session.controller.abort();
+        fail(reason, session.token);
+      });
     }
   }
-  let awaitingTypedReply = false;
-  let previousResponseId = "";
 
-  watch(
-    () => [
-      chat.busy,
-      chat.messages.filter(
-        (m) => m.role === "assistant" && m.status === "complete",
-      ).at(-1)?.id,
-    ] as const,
-    () => {
-      const latest = [...chat.messages]
-        .reverse()
-        .find(
-          (m) => m.role === "assistant" && m.status === "complete",
-        );
-
-      if (chat.busy) {
-        if (state.value === "idle" && !awaitingTypedReply) {
-          awaitingTypedReply = true;
-          previousResponseId = latest?.id ?? "";
+  function onChatStream(event: ChatStreamEvent) {
+    if (event.type === "start") {
+      if (!autoSpeak.value || (state.value !== "idle" && state.value !== "thinking")) return;
+      streamSession?.controller.abort();
+      const token = state.value === "thinking" ? generation : ++generation;
+      streamSession = {
+        id: event.requestId,
+        token,
+        controller: new AbortController(),
+        chunker: new StreamingSpeechChunker(ttsLanguage.value),
+        chain: Promise.resolve(),
+      };
+      streamPlayback = undefined;
+      return;
+    }
+    const session = streamSession;
+    if (!session || session.id !== event.requestId) return;
+    if (event.type === "delta") {
+      enqueueSpeech(session, session.chunker.append(event.delta));
+    } else if (event.type === "complete") {
+      enqueueSpeech(session, session.chunker.finish());
+      streamPlayback = session.chain.then(() => {
+        if (streamSession !== session) return;
+        streamSession = undefined;
+        if (session.token === generation && !session.controller.signal.aborted) {
+          state.value = "idle";
+          progress.value = "";
+          controller = undefined;
         }
-        return;
+      });
+    } else if (event.type === "error") {
+      session.controller.abort();
+      streamSession = undefined;
+      if (state.value === "synthesizing" || state.value === "speaking") {
+        playback.stop();
+        state.value = "idle";
+        progress.value = "";
       }
+    }
+  }
+  chat.onStream(onChatStream);
 
-      if (!awaitingTypedReply || !latest) return;
-      if (latest.id === previousResponseId) return;
-
-      awaitingTypedReply = false;
-      if (latest.id === lastAutoResponseId) return;
-      lastAutoResponseId = latest.id;
-
-      void autoPlay(latest);
-    },
-  );
   async function start() {
     if (active.value || chat.busy || !chat.connected || !chat.character) return;
     const token = ++generation;
@@ -310,7 +339,11 @@ export const useVoice = defineStore("voice", () => {
       state.value = "thinking";
       const reply = await chat.sendAndWait(transcript.value, signal);
       signal.throwIfAborted();
-      await speak(reply.content, signal, token, reply);
+      if (autoSpeak.value && streamPlayback) {
+        await streamPlayback;
+      } else {
+        await speak(reply.content, signal, token, reply);
+      }
     } catch (e) {
       fail(e, token);
     }
