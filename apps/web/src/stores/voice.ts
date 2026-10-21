@@ -39,8 +39,10 @@ export const useVoice = defineStore("voice", () => {
     chat = useChat(),
     recorder = useVoiceRecorder(),
     playback = useVoicePlayback();
-  const autoSpeak = ref(localStorage.getItem("companion-auto-speak") === "true");
-  watch(autoSpeak, (value) => localStorage.setItem("companion-auto-speak", String(value)));
+  const autoSpeak = ref(typeof localStorage !== "undefined" && localStorage.getItem("companion-auto-speak") === "true");
+  watch(autoSpeak, (value) => {
+    if (typeof localStorage !== "undefined") localStorage.setItem("companion-auto-speak", String(value));
+  });
   const state = ref<VoiceState>("idle"),
     error = ref(""),
     transcript = ref(""),
