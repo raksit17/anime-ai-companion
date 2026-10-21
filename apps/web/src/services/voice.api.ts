@@ -76,7 +76,7 @@ export async function synthesizePcmStream(
   text: string,
   language: string,
   signal: AbortSignal,
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<{ stream: ReadableStream<Uint8Array>; sampleRate: number }> {
   const response = await request(
     "/synthesize/stream",
     {
@@ -86,10 +86,11 @@ export async function synthesizePcmStream(
     },
     signal,
   );
+  const sampleRate = Number(response.headers.get("x-sample-rate"));
   if (response.headers.get("x-audio-encoding") !== "pcm_s16le" ||
-      response.headers.get("x-sample-rate") !== "48000" ||
+      ![24000, 48000].includes(sampleRate) ||
       response.headers.get("x-channels") !== "1" || !response.body) {
-    throw new Error("Native MOSS stream must be 48 kHz mono PCM s16le");
+    throw new Error("MOSS stream must be 24 or 48 kHz mono PCM s16le");
   }
-  return response.body;
+  return { stream: response.body, sampleRate };
 }

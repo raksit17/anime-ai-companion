@@ -252,7 +252,7 @@ export const useVoice = defineStore("voice", () => {
         const native = health.value?.streaming_ready === true &&
           health.value.streaming_languages?.includes(chunk.language) === true;
         if (native) {
-          let pcm: ReadableStream<Uint8Array> | undefined;
+          let pcm: { stream: ReadableStream<Uint8Array>; sampleRate: number } | undefined;
           try {
             pcm = await synthesizePcmStream(chunk.text, chunk.language, session.controller.signal);
           } catch (error) {
@@ -265,7 +265,7 @@ export const useVoice = defineStore("voice", () => {
             session.controller.signal.throwIfAborted();
             if (session.token !== generation) return;
             state.value = "speaking";
-            await playback.playPcmStream(pcm, session.controller.signal);
+            await playback.playPcmStream(pcm.stream, session.controller.signal, pcm.sampleRate);
             return;
           }
         }

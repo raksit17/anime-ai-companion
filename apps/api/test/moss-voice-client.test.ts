@@ -96,7 +96,7 @@ test("MOSS jobs route bilingual English to Chatterbox and Thai to MOSS with lang
   }
 });
 
-test("native MOSS stream uses SGLang PCM only for a moss engine; preserves Chatterbox", async () => {
+test("native MOSS stream uses PCM for MOSS 48k and Chatterbox Turbo 24k", async () => {
   const keys = [
     "VOICE_STUDIO_URL", "VOICE_STUDIO_API_KEY", "VOICE_STUDIO_EN_ENGINE",
     "VOICE_STUDIO_TH_ENGINE", "VOICE_STUDIO_VOICE_ID", "VOICE_STUDIO_TH_VOICE_ID",
@@ -118,7 +118,7 @@ test("native MOSS stream uses SGLang PCM only for a moss engine; preserves Chatt
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       requests.push({ url: path, body });
       if (path === "/v1/stream/status") {
-        return new Response(JSON.stringify({ configured: true, ready: true }));
+        return new Response(JSON.stringify({ configured: true, ready: true, engines: { moss: {ready:true}, "chatterbox-turbo": {ready:true} } }));
       }
       if (path === "/v1/voices") {
         return new Response(JSON.stringify({ items: [] }));
@@ -128,7 +128,7 @@ test("native MOSS stream uses SGLang PCM only for a moss engine; preserves Chatt
           headers: {
             "Content-Type": "application/octet-stream",
             "X-Audio-Encoding": "pcm_s16le",
-            "X-Sample-Rate": "48000",
+            "X-Sample-Rate": body?.engine === "chatterbox-turbo" ? "24000" : "48000",
             "X-Channels": "1",
           },
         });
@@ -137,19 +137,22 @@ test("native MOSS stream uses SGLang PCM only for a moss engine; preserves Chatt
     };
     const client = new MossVoiceClient();
     const signal = new AbortController().signal;
-    assert.deepEqual(client.nativeStreamingLanguages(), ["th"]);
-    assert.equal(await client.streamingAvailable(signal), true);
+    assert.deepEqual(client.nativeStreamingLanguages(), ["th", "en"]);
+    assert.deepEqual(await client.streamingReadyLanguages(signal), ["th", "en"]);
     const response = await client.streamSpeech("*ยิ้ม* สวัสดีค่ะ", "th", signal);
     assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [0, 0, 255, 127]);
     const payload = requests.find((r) => r.url === "/v1/stream")?.body;
     assert.equal(payload.text, "สวัสดีค่ะ");
     assert.equal(payload.language, "Thai");
     assert.equal(payload.voice_id, null);
-    await assert.rejects(
-      client.streamSpeech("Hello", "en", signal),
-      /does not support the SGLang streaming endpoint/,
-    );
-    assert.equal(requests.filter((r) => r.url === "/v1/stream").length, 1);
+    const englishResponse = await client.streamSpeech("Hello there!", "en", signal);
+    assert.equal(englishResponse.headers.get("x-sample-rate"), "24000");
+    assert.deepEqual([...new Uint8Array(await englishResponse.arrayBuffer())], [0, 0, 255, 127]);
+    const requestsForStream = requests.filter((r) => r.url === "/v1/stream");
+    assert.equal(requestsForStream.length, 2);
+    assert.equal(requestsForStream[0].body.engine, "moss");
+    assert.equal(requestsForStream[1].body.engine, "chatterbox-turbo");
+    assert.equal(requestsForStream[1].body.language, "English");
   } finally {
     globalThis.fetch = previousFetch;
     for (const key of keys) {
