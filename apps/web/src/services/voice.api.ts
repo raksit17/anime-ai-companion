@@ -5,6 +5,8 @@ export interface VoiceHealth {
   tts_engine: string;
   tts_languages: string[];
   model_state: string;
+  streaming_ready?: boolean;
+  streaming_languages?: string[];
 }
 async function request(
   path: string,
@@ -63,4 +65,31 @@ export async function synthesize(
       signal,
     )
   ).blob();
+}
+
+
+/**
+ * Native MOSS PCM streaming. Only call when /voice/health reports ready.
+ * Unlike /synthesize, the response body starts before generation completes.
+ */
+export async function synthesizePcmStream(
+  text: string,
+  language: string,
+  signal: AbortSignal,
+): Promise<ReadableStream<Uint8Array>> {
+  const response = await request(
+    "/synthesize/stream",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language }),
+    },
+    signal,
+  );
+  if (response.headers.get("x-audio-encoding") !== "pcm_s16le" ||
+      response.headers.get("x-sample-rate") !== "48000" ||
+      response.headers.get("x-channels") !== "1" || !response.body) {
+    throw new Error("Native MOSS stream must be 48 kHz mono PCM s16le");
+  }
+  return response.body;
 }

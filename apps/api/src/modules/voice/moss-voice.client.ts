@@ -152,6 +152,68 @@ export class MossVoiceClient {
     return speech;
   }
 
+
+  /**
+   * True PCM streaming is provided by a separate SGLang-Omni MOSS server,
+   * not by the Chatterbox-Turbo /v1/jobs implementation.
+   */
+  nativeStreamingLanguages(): Array<"th" | "en"> {
+    const languages: Array<"th" | "en"> = [];
+    if (this.thaiEngine === "moss") languages.push("th");
+    if (this.englishEngine === "moss") languages.push("en");
+    return languages;
+  }
+
+  async streamingAvailable(signal: AbortSignal): Promise<boolean> {
+    try {
+      // Do not delay companion startup if an optional SGLang server is down.
+      const probe = AbortSignal.any([signal, AbortSignal.timeout(1800)]);
+      const response = await this.call("/v1/stream/status", {}, probe);
+      const status = await response.json() as { configured?: boolean; ready?: boolean };
+      return status.configured === true && status.ready === true;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      this.logger.warn("SGLang MOSS streaming is unavailable; keeping WAV synthesis");
+      return false;
+    }
+  }
+
+  async streamSpeech(
+    text: string,
+    language: string,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    if (language !== "th" && language !== "en") {
+      throw new BadRequestException("Streaming speech supports Thai and English only");
+    }
+    if (!this.nativeStreamingLanguages().includes(language)) {
+      throw new HttpException("This voice engine does not support the SGLang streaming endpoint", 409);
+    }
+    const cleaned = this.speechOnly(text, language);
+    const voice = await this.voiceId(language, undefined, signal);
+    const response = await this.call("/v1/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: cleaned,
+        language: language === "th" ? "Thai" : "English",
+        voice_id: voice,
+        temperature: 1.7,
+        top_p: 0.8,
+        top_k: 25,
+      }),
+    }, signal);
+    if (!response.body ||
+        !response.headers.get("content-type")?.includes("application/octet-stream") ||
+        response.headers.get("x-audio-encoding") !== "pcm_s16le" ||
+        response.headers.get("x-sample-rate") !== "48000" ||
+        response.headers.get("x-channels") !== "1") {
+      await response.body?.cancel().catch(() => undefined);
+      throw new BadGatewayException("MOSS streaming returned unsupported audio; expected 48 kHz mono PCM s16le");
+    }
+    return response;
+  }
+
   async synthesize(text: string, language: string, voiceId: string | undefined, signal: AbortSignal): Promise<Buffer> {
     const selected = language.trim().toLowerCase();
     if (selected !== "th" && selected !== "en") {

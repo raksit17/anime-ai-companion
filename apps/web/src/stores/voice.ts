@@ -7,6 +7,7 @@ import { useVoicePlayback } from "../composables/useVoicePlayback";
 import {
   transcribe,
   synthesize,
+  synthesizePcmStream,
   voiceHealth,
   type VoiceHealth,
 } from "../services/voice.api";
@@ -246,6 +247,28 @@ export const useVoice = defineStore("voice", () => {
         if (session.token !== generation) return;
         state.value = "synthesizing";
         progress.value = "กำลังสร้างเสียงขณะ AI ตอบ";
+        // SGLang PCM streaming is a distinct engine; never replace
+        // Chatterbox-Turbo English with a different voice.
+        const native = health.value?.streaming_ready === true &&
+          health.value.streaming_languages?.includes(chunk.language) === true;
+        if (native) {
+          let pcm: ReadableStream<Uint8Array> | undefined;
+          try {
+            pcm = await synthesizePcmStream(chunk.text, chunk.language, session.controller.signal);
+          } catch (error) {
+            if (session.controller.signal.aborted) throw error;
+            // SGLang may have stopped since the health probe.
+            // Fall back only if streaming never started (no duplicated audio).
+            console.warn("MOSS PCM stream unavailable, falling back to WAV", error);
+          }
+          if (pcm) {
+            session.controller.signal.throwIfAborted();
+            if (session.token !== generation) return;
+            state.value = "speaking";
+            await playback.playPcmStream(pcm, session.controller.signal);
+            return;
+          }
+        }
         const wav = await synthesize(chunk.text, chunk.language, session.controller.signal, true);
         session.controller.signal.throwIfAborted();
         if (session.token !== generation) return;

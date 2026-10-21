@@ -191,9 +191,37 @@ export class VoiceService {
     }
     throw new BadGatewayException("MOSS Voice Studio synthesis timed out");
   }
+  /**
+   * Hold the GPU lock for the entire response stream, not just its headers.
+   * Auto Speak may bypass the lock only with the explicit GPU concurrency flag.
+   */
+  async openSpeechStream(text: string, language: string, signal: AbortSignal) {
+    if (process.env.VOICE_TTS_PROVIDER !== "moss" ||
+        !this.moss.nativeStreamingLanguages().includes(language as "th" | "en")) {
+      throw new HttpException("Native MOSS streaming is not available for this voice engine", 409);
+    }
+    this.gate.assertHealthy();
+    const parallel = process.env.VOICE_STREAM_CONCURRENT_GPU === "true";
+    const release = parallel ? () => {} : await this.gate.acquire(signal);
+    try {
+      const response = await this.moss.streamSpeech(text, language, signal);
+      return { response, release };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
   async health(signal: AbortSignal) {
-    if (process.env.VOICE_TTS_PROVIDER === "moss")
-      return this.moss.health(signal);
+    if (process.env.VOICE_TTS_PROVIDER === "moss") {
+      const health = await this.moss.health(signal);
+      const enabled = await this.moss.streamingAvailable(signal);
+      return {
+        ...health,
+        streaming_ready: enabled,
+        streaming_languages: enabled ? this.moss.nativeStreamingLanguages() : [],
+      };
+    }
     if (localAiVoiceEnabled()) {
       const models = await this.localai.models(signal);
       const stt = models.includes(process.env.LOCALAI_STT_MODEL ?? "whisper-1");
