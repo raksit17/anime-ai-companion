@@ -1,4 +1,4 @@
-import { Injectable, HttpException, ServiceUnavailableException, BadGatewayException } from "@nestjs/common";
+import { Injectable, Logger, HttpException, BadRequestException, ServiceUnavailableException, BadGatewayException } from "@nestjs/common";
 import { setTimeout as delay } from "node:timers/promises";
 
 export interface MossVoice {
@@ -18,10 +18,12 @@ type MossJob = {
 export class MossVoiceClient {
   private readonly url = (process.env.VOICE_STUDIO_URL ?? "http://127.0.0.1:8001").replace(/\/$/, "");
   private readonly key = process.env.VOICE_STUDIO_API_KEY ?? "";
-  private readonly defaultVoice = process.env.VOICE_STUDIO_VOICE_ID ?? "";
-  // Chatterbox-Turbo supports English only; Thai jobs keep MOSS defaults.
-  private readonly englishEngine = process.env.VOICE_STUDIO_EN_ENGINE?.trim() || "chatterbox-turbo";
-  private chatterboxEnglishVoiceId = "";
+  private readonly logger = new Logger(MossVoiceClient.name);
+  private readonly defaultVoice = process.env.VOICE_STUDIO_VOICE_ID?.trim() || "";
+  private readonly englishVoice = process.env.VOICE_STUDIO_EN_VOICE_ID?.trim() || "";
+  private readonly thaiVoice = process.env.VOICE_STUDIO_TH_VOICE_ID?.trim() || "";
+  private readonly englishEngine = process.env.VOICE_STUDIO_EN_ENGINE?.trim().toLowerCase() || "chatterbox-turbo";
+  private readonly thaiEngine = process.env.VOICE_STUDIO_TH_ENGINE?.trim().toLowerCase() || "moss";
 
   private async call(path: string, options: RequestInit, signal: AbortSignal): Promise<Response> {
     if (!this.key.trim()) {
@@ -31,9 +33,9 @@ export class MossVoiceClient {
     headers.set("X-API-Key", this.key);
     let response: Response;
     try {
-      console.debug("MOSS Voice Studio request", path, options);
+      this.logger.debug("MOSS request " + (options.method || "GET") + " " + path);
       response = await fetch(this.url + path, { ...options, headers, signal });
-      console.debug("MOSS Voice Studio response", path, response.status, response.statusText);
+      this.logger.debug("MOSS response " + path + " " + response.status);
     } catch (error) {
       if (signal.aborted) throw error;
       throw new ServiceUnavailableException("MOSS Voice Studio unavailable at " + this.url);
@@ -65,48 +67,131 @@ export class MossVoiceClient {
     return { items: Array.isArray(data.items) ? data.items : [] };
   }
 
-  private async voiceId(language: string, signal: AbortSignal) {
-    if (this.defaultVoice) return this.defaultVoice;
-    if (language !== "en") return null;
-    if (this.chatterboxEnglishVoiceId) return this.chatterboxEnglishVoiceId;
+  private supportsLanguage(voice: MossVoice, language: "en" | "th"): boolean {
+    const value = (voice.language || "").trim().toLowerCase();
+    return language === "en"
+      ? /^(en|english)(?:$|[-_ ])/.test(value)
+      : /^(th|thai)(?:$|[-_ ])/.test(value);
+  }
+
+  private async voiceId(
+    language: "en" | "th",
+    requestedVoiceId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    const configured = language === "en" ? this.englishVoice : this.thaiVoice;
+    const candidates = [...new Set(
+      [configured, requestedVoiceId?.trim(), this.defaultVoice].filter(
+        (id): id is string => Boolean(id),
+      ),
+    )];
+
+    // MOSS voices are reference audio profiles, not model IDs. Never send an
+    // English reference to the Thai engine (or vice versa).
     const { items } = await this.voices(signal);
-    const voice = items.find((item) =>
-      /chatterbox[-\s]?turbo/i.test(`${item.name} ${item.character ?? ""}`) &&
-      /^(en|english)(\b|[-_])/i.test(item.language.trim()),
-    );
-    if (!voice) {
-      throw new ServiceUnavailableException(
-        "MOSS voice 'chatterbox-turbo · English' was not found; set VOICE_STUDIO_VOICE_ID to its voice ID",
-      );
+    for (const id of candidates) {
+      const voice = items.find((item) => item.id === id);
+      if (voice && this.supportsLanguage(voice, language)) return voice.id;
+      this.logger.warn("Ignoring incompatible or missing MOSS voice " + id + " for " + language);
     }
-    this.chatterboxEnglishVoiceId = voice.id;
-    return voice.id;
+
+    const compatible = items.filter((item) => this.supportsLanguage(item, language));
+    if (language === "en") {
+      const preferred =
+        compatible.find((item) =>
+          /chatterbox[-\s]?turbo/i.test(item.name + " " + (item.character || "")),
+        ) || compatible[0];
+
+      // A missing English reference must not silently turn into a Thai MOSS job.
+      // Chatterbox supports its built-in voice without a reference, but an
+      // explicit configured voice that does not exist should be reported.
+      if (!preferred && (this.englishVoice || requestedVoiceId)) {
+        throw new ServiceUnavailableException(
+          "Configured English MOSS voice was not found; check /v1/voices and VOICE_STUDIO_EN_VOICE_ID",
+        );
+      }
+      return preferred?.id || null;
+    }
+
+    // MOSS original can synthesize Thai with its built-in voice when no Thai
+    // reference is installed. A null voice_id is valid for this case.
+    return compatible[0]?.id || null;
+  }
+
+  private speechOnly(text: string, language: "en" | "th"): string {
+    const normalized = text.replace(/\r\n/g, "\n").trim();
+    const labels = [...normalized.matchAll(/^[ \t]*(English|Thai(?: translation)?)[ \t]*[:：][ \t]*/gim)];
+    let speech = normalized;
+
+    if (labels.length > 0) {
+      const blocks: string[] = [];
+      for (let i = 0; i < labels.length; i++) {
+        const label = labels[i]!;
+        const blockLanguage = /^english$/i.test(label[1]!) ? "en" : "th";
+        if (blockLanguage !== language) continue;
+        const from = label.index! + label[0].length;
+        const to = labels[i + 1]?.index ?? normalized.length;
+        blocks.push(normalized.slice(from, to));
+      }
+      if (!blocks.length) {
+        throw new BadRequestException("No " + language + " speech section found");
+      }
+      speech = blocks.join("\n");
+    }
+
+    // Keep [chuckle] and other Chatterbox speech cues; remove Live2D *actions*.
+    speech = speech
+      .replace(/(?<!\\)\*[^*\r\n]{1,240}\*/g, " ")
+      .replace(/\p{Extended_Pictographic}/gu, "")
+      .replace(/[\uFE0E\uFE0F\u200D]/g, "")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    if (!speech) throw new BadRequestException("No speakable text after removing actions");
+    return speech;
   }
 
   async synthesize(text: string, language: string, voiceId: string | undefined, signal: AbortSignal): Promise<Buffer> {
-    if (language !== "th" && language !== "en") {
-      throw new HttpException("MOSS Voice Studio supports Thai and English only", 400);
+    const selected = language.trim().toLowerCase();
+    if (selected !== "th" && selected !== "en") {
+      throw new BadRequestException("MOSS Voice Studio supports Thai and English only");
     }
     signal.throwIfAborted();
-    if (language === "en" && !["moss", "chatterbox-turbo"].includes(this.englishEngine)) {
+
+    const engine = selected === "en" ? this.englishEngine : this.thaiEngine;
+    if (selected === "en" && !["moss", "chatterbox-turbo"].includes(engine)) {
       throw new ServiceUnavailableException("VOICE_STUDIO_EN_ENGINE must be moss or chatterbox-turbo");
     }
+    if (selected === "th" && engine !== "moss") {
+      throw new ServiceUnavailableException("VOICE_STUDIO_TH_ENGINE must be moss");
+    }
+
+    const cleaned = this.speechOnly(text, selected);
+    const selectedVoice = await this.voiceId(selected, voiceId, signal);
+    const payload = {
+      text: cleaned,
+      language: selected === "en" ? "English" : "Thai",
+      voice_id: selectedVoice,
+      engine,
+      // Chatterbox never uses MOSS checkpoint IDs or F5 voice packages.
+      ...(engine === "chatterbox-turbo" ? { model_id: null, voice_model_id: null } : {}),
+      temperature: 1.7,
+      top_k: 25,
+      top_p: 0.8,
+    };
+    this.logger.log(
+      "MOSS synthesis: " + JSON.stringify({
+        language: payload.language,
+        engine: payload.engine,
+        voice_id: payload.voice_id,
+        textLength: cleaned.length,
+      }),
+    );
     const response = await this.call("/v1/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        language: language === "th" ? "Thai" : "English",
-        voice_id: voiceId || await this.voiceId(language, signal),
-        ...(language === "en" ? {
-          engine: this.englishEngine,
-          model_id: null,
-          voice_model_id: null,
-          temperature: 1.7,
-          top_k: 25,
-          top_p: 0.8,
-        } : {}),
-      }),
+      body: JSON.stringify(payload),
     }, signal);
     const started = (await response.json()) as { id?: string };
     if (!started.id || !/^[0-9a-f-]{36}$/i.test(started.id)) {

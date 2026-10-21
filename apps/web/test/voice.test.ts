@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useVoice } from "../src/stores/voice";
 import { speechChunks } from "../src/services/speech-chunks";
-import { assistantDisplayText, parseAssistantSegments } from "../src/services/speech-segments";
+import { assistantDisplayText, parseAssistantSegments, selectBilingualSpeech } from "../src/services/speech-segments";
 import { mouthFromSamples } from "../src/composables/useLipSync";
 const f = vi.hoisted(() => ({
   chat: {
@@ -168,4 +168,25 @@ it("RMS mouth output is bounded, silent audio closes the mouth", () => {
   const result = mouthFromSamples(new Float32Array(20).fill(1));
   expect(result).toBeGreaterThan(0);
   expect(result).toBeLessThanOrEqual(1);
+});
+
+it("extracts English for Chatterbox when AI uses Thai: rather than Thai translation:", async () => {
+  const voice = useVoice();
+  voice.ttsLanguage = "en";
+  await voice.replay("English:\n*Grins brightly.*\nWelcome back, Yuna!\n\nThai:\n*ยิ้ม*\nกลับมาแล้วนะ");
+  expect(f.synthesize).toHaveBeenCalledWith(
+    "Welcome back, Yuna!",
+    "en",
+    expect.any(AbortSignal),
+  );
+  expect(f.synthesize).toHaveBeenCalledTimes(1);
+});
+it("selects Thai translation explicitly when the Thai voice is selected", async () => {
+  const voice = useVoice();
+  voice.ttsLanguage = "th";
+  await voice.replay("English:\nHello there!\n\nThai translation:\nสวัสดีนะ");
+  expect(f.synthesize).toHaveBeenCalledWith(
+    "สวัสดีนะ", "th", expect.any(AbortSignal),
+  );
+  expect(selectBilingualSpeech("English:\nHi\nThai:\nหวัดดี", "en")?.text).toBe("Hi");
 });

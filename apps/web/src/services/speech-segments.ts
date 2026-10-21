@@ -68,3 +68,30 @@ export function assistantDisplayText(content: string): string {
     .map((segment) => segment.text)
     .join("\n");
 }
+
+
+/** Extract the selected speech from real model replies using "Thai:" or "Thai translation:". */
+export function selectBilingualSpeech(
+  content: string,
+  preferred: string,
+): { text: string; language: "th" | "en" } | null {
+  const markers = [...content.matchAll(/^[ \t]*(English|Thai(?: translation)?)[ \t]*[:：][ \t]*/gim)];
+  const languageOf = (value: string) => /^english$/i.test(value) ? "en" : "th";
+  if (!markers.some((m) => languageOf(m[1]!) === "en") ||
+      !markers.some((m) => languageOf(m[1]!) === "th")) return null;
+  const language = preferred.toLowerCase().startsWith("th") ? "th" : "en";
+  const sections: string[] = [];
+  for (let i = 0; i < markers.length; i++) {
+    const marker = markers[i]!;
+    if (languageOf(marker[1]!) !== language) continue;
+    const start = marker.index! + marker[0].length;
+    const end = markers[i + 1]?.index ?? content.length;
+    sections.push(content.slice(start, end).trim());
+  }
+  return { text: sections.join("\n").trim(), language };
+}
+
+/** Actions between single asterisks belong to Live2D, not the synthesizer. */
+export function removeNarratedActions(text: string): string {
+  return text.replace(/(?<!\\)\*[^*\r\n]{1,240}\*/g, " ").replace(/[ \t]+/g, " ").trim();
+}

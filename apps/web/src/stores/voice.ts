@@ -12,7 +12,7 @@ import {
 } from "../services/voice.api";
 import { speechChunks } from "../services/speech-chunks";
 import type { AnimationPlanV1, Emotion, Message } from "@companion/contracts";
-import { parseAssistantSegments, type AssistantSegment } from "../services/speech-segments";
+import { parseAssistantSegments, selectBilingualSpeech, removeNarratedActions, type AssistantSegment } from "../services/speech-segments";
 // Match the TTS language to the actual spoken text rather than the UI default.
 // Keep explicitly selected non-Thai/English languages (e.g. Japanese) unchanged.
 function languageForSpeech(text: string, preferred: string): string {
@@ -108,16 +108,8 @@ export const useVoice = defineStore("voice", () => {
     },
   ) {
     const plan = reply?.animationPlan;
-    const bilingual = content.match(
-      /English:\s*([\s\S]*?)\n\s*Thai translation:\s*([\s\S]*)/i,
-    );
-    const speechContent = bilingual
-      ? ttsLanguage.value.toLowerCase().startsWith("th")
-        ? bilingual[2]!.trim()
-        : ttsLanguage.value.toLowerCase().startsWith("en")
-          ? bilingual[1]!.trim()
-          : bilingual[1]!.trim()
-      : content;
+    const bilingual = selectBilingualSpeech(content, ttsLanguage.value);
+    const speechContent = bilingual?.text ?? content;
     let completed = 0;
 
     async function speakText(
@@ -129,7 +121,7 @@ export const useVoice = defineStore("voice", () => {
         ? AbortSignal.any([signal, segmentSignal])
         : signal;
 
-      for (const chunk of speechChunks(text)) {
+      for (const chunk of speechChunks(removeNarratedActions(text))) {
         combined.throwIfAborted();
         if (token !== generation) return;
 
@@ -138,7 +130,7 @@ export const useVoice = defineStore("voice", () => {
 
         const wav = await synthesize(
           chunk,
-          languageForSpeech(chunk, ttsLanguage.value),
+          bilingual?.language ?? languageForSpeech(chunk, ttsLanguage.value),
           combined,
         );
 
@@ -155,7 +147,7 @@ export const useVoice = defineStore("voice", () => {
         (sum, segment) =>
           sum +
           (segment.type === "speech"
-            ? speechChunks(segment.text).length
+            ? speechChunks(removeNarratedActions(segment.text)).length
             : 0),
         0,
       );
@@ -173,7 +165,7 @@ export const useVoice = defineStore("voice", () => {
         (sum, segment) =>
           sum +
           (segment.type === "speech"
-            ? speechChunks(segment.text).length
+            ? speechChunks(removeNarratedActions(segment.text)).length
             : 0),
         0,
       );
