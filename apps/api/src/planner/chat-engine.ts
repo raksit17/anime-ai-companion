@@ -28,12 +28,115 @@ const formatMinutes = (minutes: number) =>
  * Suggestions only ask for advice or open explicit settings; they never silently
  * change the user's sleep window or submit a different schedule.
  */
+/** Resolve explicit relative day words against Bangkok today, never the UI's selected date.
+ * When a single plainly phrased add request has an explicit duration, parse it
+ * deterministically rather than letting a small local model invent a date.
+ */
+export function simpleAddFromMessage(message: string, now = Date.now()): Command | undefined {
+  const match = message.trim().match(
+    /^(วันนี้|พรุ่งนี้|มะรืน(?:นี้)?)\s*เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?\s*(.+?)\s*(?:อีก\s*)?(\d{1,3})\s*(ชั่วโมง|นาที)\s*(?:ด้วย|หน่อย|นะ|ค่ะ|ครับ)?\s*$/u,
+  );
+  if (!match) return undefined;
+  const name = match[2].trim();
+  const minutes = Number(match[3]) * (match[4] === "ชั่วโมง" ? 60 : 1);
+  if (!name || name.length > 120 || minutes < 5 || minutes > 240) return undefined;
+  const days = match[1] === "วันนี้" ? 0 : match[1] === "พรุ่งนี้" ? 1 : 2;
+  const date = new Date(Date.parse(today(now)) + days * 86400000)
+    .toISOString()
+    .slice(0, 10);
+  return { type: "add", name, duration: minutes, date, fixed: false };
+}
+
+export function normalizePlannerActions(
+  commands: Command[],
+  message: string,
+  now = Date.now(),
+): Command[] {
+  const explicit = simpleAddFromMessage(message, now);
+  if (explicit) return [explicit];
+  // Correct a model's selected-date/relative-date confusion for a single
+  // action, but do not rewrite requests that name multiple or absolute dates.
+  const trimmed = message.trim();
+  if (
+    commands.length !== 1 ||
+    /\d{4}-\d{2}-\d{2}/.test(trimmed) ||
+    /วันนี้.+พรุ่งนี้|พรุ่งนี้.+วันนี้|มะรืน.+(?:วันนี้|พรุ่งนี้)/u.test(trimmed)
+  ) return commands;
+  const days = /พรุ่งนี้/u.test(trimmed) ? 1 : /มะรืน/u.test(trimmed) ? 2 : /วันนี้/u.test(trimmed) ? 0 : undefined;
+  if (days === undefined || !["add", "move", "adapt"].includes(commands[0].type)) return commands;
+  const date = new Date(Date.parse(today(now)) + days * 86400000)
+    .toISOString()
+    .slice(0, 10);
+  return [{ ...commands[0], date }];
+}
+
+export function freeStartForAdd(
+  state: State,
+  action: Command,
+  selected: string,
+  now = Date.now(),
+): number | undefined {
+  if (action.type !== "add" || !action.name || !action.duration) return undefined;
+  const date = action.date ?? selected;
+  if (!validDate(date) || date < today(now)) return undefined;
+  const s: Session = {
+    id: "preview-new-activity",
+    goalId: action.fixed ? undefined : "daily:preview-new-activity",
+    name: action.name,
+    date,
+    start: action.start ?? state.settings.wake,
+    duration: action.duration,
+    status: "planned",
+    fixed: !!action.fixed,
+    reminder: 10,
+  };
+  const possibleStarts = action.fixed
+    ? [s.start]
+    : [s.start, ...Array.from({ length: 96 }, (_, i) => i * 15)];
+  return possibleStarts.find((start) => fits(state, { ...s, start }, now));
+}
 export function explainPlannerConstraint(
   state: State,
   commands: Command[],
   message: string,
+  selected = today(),
+  now = Date.now(),
 ): PlannerConstraint {
   const action = commands.length === 1 ? commands[0] : undefined;
+  if (action?.type === "add" && action.name && action.duration) {
+    const date = action.date ?? selected;
+    const limit = state.capacityOverrides?.[date] ?? state.settings.maxMinutes;
+    const allocated = state.sessions
+      .filter((s) => s.date === date && !!s.goalId &&
+        (s.status === "planned" || s.status === "done"))
+      .reduce((sum, s) => sum + s.duration, 0);
+    const freeStart = freeStartForAdd(state, action, selected, now);
+    if (freeStart !== undefined && !action.fixed) {
+      return {
+        reason: `วันที่ ${date} ยังมีเวลาว่าง ${formatMinutes(freeStart)}–${formatMinutes(freeStart + action.duration)} (จัดแล้ว ${allocated}/${limit} นาที) แต่คำสั่งที่โมเดลส่งมาไม่ผ่านการตรวจสอบ`,
+        followUps: [{
+          label: `เพิ่ม ${formatMinutes(freeStart)}`,
+          prompt: `เพิ่มงาน ${action.name} วันที่ ${date} เวลา ${formatMinutes(freeStart)} นาน ${action.duration} นาที โดยให้ฉันยืนยันเวลานี้`,
+        }],
+      };
+    }
+    if (allocated + action.duration > limit && !action.fixed) {
+      return {
+        reason: `วันที่ ${date} มีงานยืดหยุ่น ${allocated}/${limit} นาที เพิ่ม ${action.duration} นาทีจะเกินเพดานรายวัน`,
+        followUps: [
+          { label: "ปรับภาระงาน", openSettings: true },
+          { label: "แบ่งงานไปวันอื่น", prompt: `ช่วยเสนอการแบ่ง ${action.name} วันที่ ${date} ไปวันอื่นโดยไม่เพิ่มเพดาน และยังไม่บันทึก` },
+        ],
+      };
+    }
+    return {
+      reason: `วันที่ ${date} ยังหาช่วงต่อเนื่อง ${action.duration} นาทีสำหรับ ${action.name} ไม่ได้ ภายใน ${formatMinutes(state.settings.wake)}–${formatMinutes(state.settings.sleep)} โดยเว้นพักอย่างน้อย ${Math.max(15, state.settings.breakMinutes)} นาที (งานยืดหยุ่น ${allocated}/${limit} นาที)`,
+      followUps: [
+        { label: "ปรับเวลาว่าง", openSettings: true },
+        { label: "แบ่งงานใหม่", prompt: `ช่วยจัดแผนสำรองสำหรับ ${action.name} วันที่ ${date} โดยเสนอทางเลือกก่อน ไม่แก้ตารางเอง` },
+      ],
+    };
+  }
   const session =
     action?.type === "move"
       ? state.sessions.find((s) => s.id === action.id)
@@ -248,7 +351,7 @@ export function executeCommands(
         ].find((start) => fits(state, { ...s, start }, now));
         if (start === undefined)
           throw new Error(
-            `ไม่มีเวลาว่างสำหรับ ${s.name} ตามเวลานอนและขีดจำกัดที่ตั้งไว้`,
+            `ไม่มีช่วงว่างที่ผ่านเงื่อนไขสำหรับ ${s.name} วันที่ ${date}`,
           );
         state.sessions.push({ ...s, start });
       }
