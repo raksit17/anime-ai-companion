@@ -18,8 +18,11 @@ import {
 } from "@nestjs/common";
 import {
   executeCommands,
+  explainExtendFollowUp,
   explainPlannerConstraint,
   parseChatOutput,
+  normalizePlannerActions,
+  simpleAddFromMessage,
   plannerConflictFallback,
   previewDailyCapacityIncrease,
   plannerMessages,
@@ -475,9 +478,31 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         },
         dto.message,
       );
+      const guided = explainExtendFollowUp(
+        snapshot, history, dto.message,
+      );
+      if (guided) {
+        blocked = { reason: guided.reason, followUps: guided.followUps };
+        output = { reply: guided.reply, actions: [] };
+      } else {
       output = parseChatOutput(
         await this.ai.plannerCompletion(messages, plannerChatSchema, signal),
       );
+      output = {
+        ...output,
+        actions: normalizePlannerActions(output.actions, dto.message),
+        // If a concrete, fully dated natural-language add is recognized,
+        // the deterministic action is authoritative over a model refusal.
+        reply: output.reply,
+      };
+      // The reply must not falsely insist the schedule is full if the
+      // deterministic command can be scheduled.
+      if (output.actions.length === 1 &&
+          /^(วันนี้|พรุ่งนี้|มะรืน)/u.test(dto.message.trim()) &&
+          /^เพิ่ม/u.test(dto.message.trim().replace(/^(?:วันนี้|พรุ่งนี้|มะรืน(?:นี้)?)\s*/u, "")) &&
+          /ไม่มีเวลาว่าง|ไม่สามารถเพิ่ม|ไม่สามารถจัด|เพิ่มไม่ได้/u.test(output.reply)) {
+        output.reply = "ได้เลยค่ะ ฉันจะลองจัดกิจกรรมนี้ให้ตามเวลาว่างและข้อจำกัดที่ตั้งไว้นะ";
+      }
       // Validate on the snapshot before entering the write transaction.
       // If constraints reject a suggested change, let the companion explain
       // the conflict rather than surfacing a 400 or losing the conversation.
@@ -489,6 +514,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             snapshot,
             output.actions,
             (e as Error).message,
+            dto.date,
           );
           capacityPreview = previewDailyCapacityIncrease(
             snapshot,
@@ -553,6 +579,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           output = { reply, actions: [] };
         }
       }
+      }
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     } finally {
@@ -599,6 +626,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             s,
             output.actions,
             (e as Error).message,
+            dto.date,
           );
           output = {
             reply: plannerConflictFallback(character.name, blocked),
@@ -607,6 +635,24 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
         if (result) {
+          // The action is backed by the validated schedule, not a possibly
+          // hallucinatory time in the model's conversational reply.
+          const exactRequest = simpleAddFromMessage(dto.message);
+          if (exactRequest) {
+            const added = result.sessions.find(
+              (next) =>
+                next.date === exactRequest.date &&
+                next.name === exactRequest.name &&
+                !s.sessions.some((old) => old.id === next.id),
+            );
+            if (added) {
+              const clock = (minutes: number) =>
+                `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+              output.reply = dto.autoApply
+                ? `ได้เลยค่ะ ฉันเพิ่ม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ให้แล้วนะ`
+                : `ฉันเตรียม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ไว้ให้ตรวจแล้วค่ะ ยังไม่ได้บันทึกจนกว่าเธอจะยืนยันนะ`;
+            }
+          }
           if (dto.autoApply) {
             s.sessions = result.sessions;
             this.changed(s);
