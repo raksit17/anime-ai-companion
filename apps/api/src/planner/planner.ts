@@ -330,6 +330,32 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       return event;
     }, true);
   }
+  removeSession(id: string) {
+    return this.access((s) => {
+      const session = s.sessions.find((item) => item.id === id);
+      if (!session) throw new NotFoundException("ไม่พบกิจกรรมในตาราง");
+      // Deletion is intentionally for an individual slot, not a completed
+      // history item or the underlying recurring goal.
+      if (session.status === "done")
+        throw new ConflictException(
+          "กิจกรรมที่ทำเสร็จแล้วเป็นส่วนหนึ่งของประวัติความคืบหน้า ไม่สามารถลบจากตารางนี้ได้",
+        );
+      s.sessions = s.sessions.filter((item) => item.id !== id);
+      if (session.goalId && s.goals.some((goal) => goal.id === session.goalId)) {
+        s.suppressedOccurrences ??= {};
+        const excluded = s.suppressedOccurrences[session.goalId] ?? [];
+        if (!excluded.includes(session.date))
+          s.suppressedOccurrences[session.goalId] = [...excluded, session.date];
+      }
+      // Invalidate outstanding proposals so confirming a stale snapshot
+      // cannot silently reinsert the removed slot.
+      this.changed(s);
+      return {
+        ok: true,
+        removed: { id: session.id, date: session.date, name: session.name },
+      };
+    }, true);
+  }
   progress(id: string, dto: ProgressDto) {
     return this.access((s) => {
       const session = s.sessions.find((x) => x.id === id);
@@ -865,6 +891,9 @@ class PlannerController {
   }
   @Post("events") event(@Body() d: EventDto) {
     return this.planner.event(d);
+  }
+  @Delete("sessions/:id") removeSession(@Param("id") id: string) {
+    return this.planner.removeSession(id);
   }
   @Patch("sessions/:id") progress(
     @Param("id") id: string,
