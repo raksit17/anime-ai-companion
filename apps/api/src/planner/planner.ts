@@ -22,6 +22,7 @@ import {
   explainPlannerConstraint,
   parseChatOutput,
   normalizePlannerActions,
+  parseDurationEdit,
   simpleAddFromMessage,
   plannerConflictFallback,
   previewDailyCapacityIncrease,
@@ -455,6 +456,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     const signal = AbortSignal.timeout(120000),
       release = await this.gate.acquire(signal);
     let output: ChatOutput;
+    let durationEdit: ReturnType<typeof parseDurationEdit>;
     let blocked: PlannerConstraint | undefined;
     let capacityPreview: DailyCapacityPreview | undefined;
     try {
@@ -487,10 +489,27 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         },
         dto.message,
       );
-      const guided = explainExtendFollowUp(
+      durationEdit = parseDurationEdit(snapshot, dto.date, dto.message);
+      const guided = durationEdit ? undefined : explainExtendFollowUp(
         snapshot, history, dto.message,
       );
-      if (guided) {
+      if (durationEdit) {
+        if (durationEdit.command) {
+          // An explicit duration request edits the existing session, not a new task.
+          output = { reply: "ฉันจะตรวจเวลาของกิจกรรมเดิมและปรับตามที่ขอนะคะ", actions: [durationEdit.command] };
+        } else {
+          blocked = {
+            reason: durationEdit.reason ?? "ยังปรับเวลากิจกรรมไม่ได้",
+            followUps: [
+              { label: "ตรวจตาราง", prompt: "ช่วยบอกกิจกรรมและช่วงเวลาในวันที่ฉันเลือก โดยยังไม่แก้ตาราง" },
+            ],
+          };
+          output = {
+            reply: `อืม… ${blocked.reason} ค่ะ ยังไม่ได้เปลี่ยนตารางนะ`,
+            actions: [],
+          };
+        }
+      } else if (guided) {
         blocked = { reason: guided.reason, followUps: guided.followUps };
         output = { reply: guided.reply, actions: [] };
       } else {
@@ -666,9 +685,24 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               start: next.start,
               duration: next.duration,
               status: next.status,
+              ...(oldById.has(next.id) && oldById.get(next.id)!.duration !== next.duration
+                ? { previousDuration: oldById.get(next.id)!.duration }
+                : {}),
               kind: (oldById.has(next.id) ? "updated" : "created") as
                 "created" | "updated",
             }));
+          // Show the new duration only after the validator returned a
+          // real changed session, never merely because the model said "done".
+          const resized = output.actions.find((a) => a.type === "resize");
+          const resizedItem = resized
+            ? changedItems.find((x) => x.id === resized.id)
+            : undefined;
+          if (resizedItem) {
+            const before = oldById.get(resizedItem.id);
+            output.reply = dto.autoApply
+              ? `ได้เลยค่ะ ฉันปรับ ${resizedItem.name} วันที่ ${resizedItem.date} จาก ${before?.duration} นาที เหลือ ${resizedItem.duration} นาทีแล้วนะ ตารางอัปเดตตามแล้วค่ะ`
+              : `ฉันเตรียมปรับ ${resizedItem.name} วันที่ ${resizedItem.date} จาก ${before?.duration} เป็น ${resizedItem.duration} นาทีไว้แล้วค่ะ รอเธอยืนยันก่อนนะ`;
+          }
           // The action is backed by the validated schedule, not a possibly
           // hallucinatory time in the model's conversational reply.
           const exactRequest = simpleAddFromMessage(dto.message);

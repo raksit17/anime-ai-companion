@@ -26,6 +26,7 @@ type PlannerFollowUp = {
   openSettings?: boolean;
 };
 type AppliedChange = {
+  previousDuration?: number;
   id: string;
   date: string;
   name: string;
@@ -553,6 +554,9 @@ watch(advanced, (value) => {
               <p v-for="c in m.appliedChanges" :key="c.id">
                 {{ c.kind === "created" ? "เพิ่ม" : "อัปเดต" }}
                 {{ c.name }} · {{ c.date }} {{ clock(c.start) }}–{{ clock(c.start + c.duration) }}
+                <span v-if="c.previousDuration !== undefined">
+                  · {{ c.previousDuration }} → {{ c.duration }} นาที
+                </span>
               </p>
             </div>
             <div v-if="m.followUps?.length" class="planner-followups">
