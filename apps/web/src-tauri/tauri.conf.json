@@ -4,8 +4,8 @@
   "version": "0.3.0",
   "identifier": "local.komorebi.companion",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "npm run dev -- --port 5174",
+    "devUrl": "http://127.0.0.1:5174",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
