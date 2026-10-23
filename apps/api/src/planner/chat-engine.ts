@@ -61,6 +61,9 @@ export function parseScheduledAdd(
   now = Date.now(),
 ): ScheduledAddIntent | undefined {
   const text = message.trim();
+  // A clock is essential to the exact-time flow; untimed requests keep
+  // their existing flexible-add/chat interpretation.
+  if (!/\d{1,2}:\d{2}/u.test(text)) return undefined;
   // Restrict this deterministic path to single create/schedule requests.
   // General questions, comments, edits and multi-task prompts still use chat.
   let input = text;
@@ -115,7 +118,7 @@ export function parseScheduledAdd(
   input = input.replace(time[0], " ");
   const durationMatch = input.match(/(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(\d{1,3})\s*(ชั่วโมง|นาที)/u);
   if (durationMatch) input = input.replace(durationMatch[0], " ");
-  input = input
+  input = input.trim()
     .replace(/^(?:ขอ|ช่วย|อยากให้|ให้ยูนะ)\s*/u, "")
     .replace(/^(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|จัด(?:ตาราง)?(?:งาน|กิจกรรม)?|ลงตาราง)\s*/u, "")
     .replace(/(?:ลงในตารางจริง|ลงตาราง|ในตาราง|ให้ด้วย|ด้วย|หน่อย|นะ|ค่ะ|ครับ)\s*$/u, "")
@@ -365,6 +368,23 @@ export function explainPlannerConstraint(
   now = Date.now(),
 ): PlannerConstraint {
   const action = commands.length === 1 ? commands[0] : undefined;
+  if (action?.type === "add" && action.name && action.duration &&
+      action.start !== undefined) {
+    const date = action.date ?? selected;
+    const end = action.start + action.duration;
+    return {
+      reason: "ยังเพิ่ม " + action.name + " วันที่ " + date +
+        " เวลา " + formatMinutes(action.start) + "–" + formatMinutes(end) +
+        " ไม่ได้ เพราะติดกิจกรรมเดิม เวลาพัก เวลานอน หรือเพดานที่ตั้งไว้ โดยยังไม่เปลี่ยนเวลาที่ขอ",
+      followUps: [
+        { label: "เสนอเวลาอื่น", prompt:
+          "ช่วยเสนอเวลาว่างอื่นสำหรับ " + action.name + " วันที่ " + date +
+          " ระยะเวลา " + action.duration +
+          " นาที ก่อนย้ายจาก " + formatMinutes(action.start) + " โดยยังไม่บันทึก" },
+        { label: "ปรับข้อจำกัด", openSettings: true },
+      ],
+    };
+  }
   if (action?.type === "add" && action.name && action.duration) {
     const date = action.date ?? selected;
     const limit = state.capacityOverrides?.[date] ?? state.settings.maxMinutes;
