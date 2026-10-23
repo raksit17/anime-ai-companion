@@ -286,7 +286,7 @@ export function parseConversationalDurationEdit(
   }
   const session = candidates[0];
   const halfHour = /ครึ่ง\s*(?:ชั่วโมง|ชม\.?)/u.test(input);
-  const numeric = input.match(/(\d{1,3})\s*(นาที|ชั่วโมง|ชม\.?)/u);
+  const numeric = [...input.matchAll(/(\d{1,3})\s*(นาที|ชั่วโมง|ชม\.?)/gu)].at(-1);
   const isHalfTask = /(?:ลด|สั้นลง|เหลือ)\s*ครึ่งหนึ่ง/u.test(input);
   if (!halfHour && !numeric && !isHalfTask) return undefined;
   // "ลดเหลือ", "ขอแค่", and "เอาเพียง" are absolute totals.
@@ -316,6 +316,8 @@ export function validateOllamaDurationEdit(
 ): { command?: Command; reason?: string } | undefined {
   if (!/(?:ลด|ย่อ|สั้นลง|เหลือ|เพิ่มเวลา|ขอแค่|ขอเพียง|เอาแค่|ครึ่ง)/u.test(message) ||
       !/(?:นาที|ชั่วโมง|ชม\.?|ครึ่งหนึ่ง)/u.test(message)) return undefined;
+  if (/(?:ไหม|หรือเปล่า|\?)/u.test(message))
+    return { reason: "นี่เป็นคำถามเกี่ยวกับการปรับเวลา ฉันยังไม่เปลี่ยนตารางนะคะ" };
   const deterministic = parseConversationalDurationEdit(state, selected, message, now);
   if (deterministic) return deterministic;
   if (commands.length !== 1 || commands[0].type !== "resize")
@@ -335,7 +337,7 @@ export function validateOllamaDurationEdit(
     return { reason: "คำสั่งที่ Ollama ตีความยังไม่ตรงกับกิจกรรมหรือวันที่ที่ระบุ จึงไม่เปลี่ยนตาราง" };
   const session = wanted[0];
   const half = /ครึ่งหนึ่ง/u.test(message);
-  const numeric = message.match(/(\d{1,3})\s*(นาที|ชั่วโมง|ชม\.?)/u);
+  const numeric = [...message.matchAll(/(\d{1,3})\s*(นาที|ชั่วโมง|ชม\.?)/gu)].at(-1);
   const halfHour = /ครึ่ง\s*(?:ชั่วโมง|ชม\.?)/u.test(message);
   if (!half && !numeric && !halfHour)
     return { reason: "ระยะเวลายังไม่ชัดเจน กรุณาระบุเป็นนาที" };
