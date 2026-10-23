@@ -685,6 +685,9 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               start: next.start,
               duration: next.duration,
               status: next.status,
+              ...(oldById.has(next.id) && oldById.get(next.id)!.duration !== next.duration
+                ? { previousDuration: oldById.get(next.id)!.duration }
+                : {}),
               kind: (oldById.has(next.id) ? "updated" : "created") as
                 "created" | "updated",
             }));
