@@ -1,0 +1,21 @@
+# Optional override for Docker Desktop 4.34+ with host networking enabled:
+# docker compose -f docker-compose.yml -f docker-compose.host-network.yml up -d --build
+#
+# Unlike host.docker.internal, this reaches services bound only to 127.0.0.1
+# on the Windows host. Requires Docker Desktop host networking (Linux containers).
+services:
+  api:
+    network_mode: host
+    environment:
+      HOST: 127.0.0.1
+      DATABASE_URL: postgresql://anime:anime_dev_password@127.0.0.1:5433/anime_companion
+      OLLAMA_URL: http://127.0.0.1:11434
+      LOCALAI_URL: http://127.0.0.1:8080
+      VOICE_SERVICE_URL: http://127.0.0.1:8000
+      VOICE_STUDIO_URL: http://127.0.0.1:8001
+  web:
+    network_mode: host
+    # With host networking, nginx listens on 5175 directly; no published ports.
+    ports: !reset []
+    volumes:
+      - ./docker/nginx.host-network.conf:/etc/nginx/conf.d/default.conf:ro
