@@ -1,0 +1,31 @@
+# Secrets and local development files must not enter any image.
+.git/
+.gitignore
+**/.env
+**/.env.*
+!apps/api/.env.example
+!apps/web/.env.example
+**/node_modules/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/dist/
+# Compiled MIT Live2D renderer/type output is intentionally copied from the
+# local machine. Never include the proprietary SDK source or full download.
+!vendor/pixi-live2d5/dist/
+!vendor/pixi-live2d5/dist/**
+!vendor/pixi-live2d5/types/
+!vendor/pixi-live2d5/types/**
+vendor/.source/
+**/src-tauri/target/
+**/src-tauri/gen/
+apps/api/src/generated/
+CubismWebSamples-develop/
+CubismWebSamples-develop.zip
+haru_ja.zip
+backup-*/
+*.log
+storage/
+README*
+docs/
+.github/
