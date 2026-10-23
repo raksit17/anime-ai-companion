@@ -819,3 +819,44 @@ body.companion-body,
 .companion-controls small {
   font-size: 11px;
 }
+
+
+/* Phone/browser mode: reveal the Live2D stage on demand without stealing
+   all screen space from the chat and planner. Desktop/Tauri remains unchanged. */
+.mobile-companion-toggle {
+  display: none;
+}
+@media (max-width: 600px) {
+  .workspace,
+  .chat-panel {
+    min-height: 0;
+  }
+  .chat-panel nav {
+    gap: 15px;
+    overflow-x: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .mobile-companion-toggle {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .character-stage.mobile-stage-open {
+    display: flex;
+    height: min(300px, 42dvh);
+    flex: 0 0 min(300px, 42dvh);
+    min-height: 0;
+  }
+  .character-stage.mobile-stage-open .stage-heading {
+    padding: 7px 12px;
+  }
+  .character-stage.mobile-stage-open .live-stage {
+    inset: 36px 0 30px;
+  }
+  .character-stage.mobile-stage-open .character-caption {
+    display: none;
+  }
+  .character-stage.mobile-stage-open .stage-footer {
+    padding: 6px 12px;
+  }
+}
