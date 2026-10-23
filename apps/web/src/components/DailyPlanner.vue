@@ -33,14 +33,24 @@ type Message = {
   outcome?: string;
   followUps?: PlannerFollowUp[];
 };
-type Proposal = { id: string; sessions: Session[]; unscheduled: string[] };
+type Proposal = {
+  id: string;
+  sessions: Session[];
+  unscheduled: string[];
+  capacityOverride?: {
+    date: string;
+    previousLimit: number;
+    maxMinutes: number;
+  };
+};
 const companion = useChat();
 const today = () =>
   new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
 const date = ref(today()),
   month = ref(today().slice(0, 7)),
   messages = ref<Message[]>([]),
-  sessions = ref<Session[]>([]);
+  sessions = ref<Session[]>([]),
+  capacityOverrides = ref<Record<string, number>>({});
 const input = ref(""),
   error = ref(""),
   busy = ref(false),
@@ -57,6 +67,9 @@ const settings = ref({
   breakMinutes: 15,
   maxMinutes: 240,
 });
+const selectedDailyLimit = computed(
+  () => capacityOverrides.value[date.value] ?? settings.value.maxMinutes,
+);
 const clock = (n: number) =>
   `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
 const shift = (d: string, n: number) =>
@@ -133,6 +146,7 @@ async function refresh() {
   const state = await api("/planner");
   sessions.value = state.sessions;
   settings.value = state.settings;
+  capacityOverrides.value = state.capacityOverrides ?? {};
 }
 let historyVersion = 0;
 watch(
@@ -431,7 +445,7 @@ watch(advanced, (value) => {
         <p class="calendar-note">
           เวลาไทย · {{ clock(settings.wake) }}–{{ clock(settings.sleep) }} ·
           กิจกรรมยืดหยุ่นไม่เกิน
-          {{ settings.maxMinutes }} นาที/วัน<br />*การปรับแบบ Adaptive
+          {{ selectedDailyLimit }} นาที{{ capacityOverrides[date] !== undefined ? ' (อนุมัติเฉพาะวันนี้)' : '/วัน' }}<br />*การปรับแบบ Adaptive
           เว้นพักอย่างน้อย 15 นาที
         </p>
       </section>
@@ -484,6 +498,12 @@ watch(advanced, (value) => {
         </div>
         <div v-if="proposal" class="chat-preview">
           <strong>ตัวอย่างแผน · ยังไม่บันทึก</strong>
+          <p v-if="proposal.capacityOverride" class="capacity-preview">
+            เพิ่มเพดานภาระเฉพาะวันที่ {{ proposal.capacityOverride.date }}
+            จาก {{ proposal.capacityOverride.previousLimit }} เป็น
+            {{ proposal.capacityOverride.maxMinutes }} นาที
+            (ไม่เปลี่ยนค่าเริ่มต้นวันอื่น)
+          </p>
           <p
             v-for="s in proposal.sessions.filter(
               (s) =>
@@ -502,8 +522,10 @@ watch(advanced, (value) => {
             {{ s.duration }} นาที · {{ label(s.status) }}
           </p>
           <p v-for="n in proposal.unscheduled" :key="n">{{ n }}</p>
-          <button :disabled="busy" @click="confirm">ยืนยัน</button
-          ><button @click="proposal = undefined">ยกเลิก</button>
+          <button :disabled="busy" @click="confirm">{{
+            proposal.capacityOverride ? "ยืนยันเพิ่มงานและเพดานเฉพาะวัน" : "ยืนยัน"
+          }}</button
+          ><button :disabled="busy" @click="proposal = undefined">ยกเลิก</button>
         </div>
         <div class="quick-prompts">
           <button
@@ -935,6 +957,12 @@ watch(advanced, (value) => {
 .planner-composer small {
   font-size: 9px;
   color: #8c9487;
+}
+.capacity-preview {
+  font-size: 12px;
+  line-height: 1.7;
+  font-weight: 600;
+  color: #677e57;
 }
 .chat-preview {
   max-height: 200px;
