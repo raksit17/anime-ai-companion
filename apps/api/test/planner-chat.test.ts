@@ -1347,7 +1347,7 @@ test("duplicate names and impossible duration edits never guess which occurrence
   assert.equal(original.id, "job-again");
   const invalid = parseConversationalDurationEdit(state, tomorrow,
     "หางาน พรุ่งนี้ ขอเพียง 0 นาที");
-  assert.equal(invalid, undefined);
+  assert.match(invalid?.reason ?? "", /5–240/);
   const tiny = parseConversationalDurationEdit(state, tomorrow,
     "หางาน พรุ่งนี้ ขอเพียง 3 นาที");
   assert.match(tiny?.reason ?? "", /5–240/);
