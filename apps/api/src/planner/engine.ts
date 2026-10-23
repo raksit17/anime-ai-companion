@@ -26,6 +26,9 @@ export type Session = {
 export type State = {
   goals: Goal[];
   sessions: Session[];
+  // Deleted recurring occurrences must not be recreated by a later plan().
+  // Other dates and the recurring goal template are unaffected.
+  suppressedOccurrences?: Record<string, string[]>;
   // A user-approved exception applies to one calendar day only.
   capacityOverrides?: Record<string, number>;
   settings: {
@@ -39,6 +42,7 @@ export type State = {
 export const initial = (): State => ({
   goals: [],
   sessions: [],
+  suppressedOccurrences: {},
   capacityOverrides: {},
   settings: { wake: 480, sleep: 1320, breakMinutes: 15, maxMinutes: 240 },
   revision: 0,
@@ -98,7 +102,8 @@ export function plan(
     )) {
       if (
         !goal.days.includes(weekday) ||
-        state.sessions.some((s) => s.goalId === goal.id && s.date === date)
+        state.sessions.some((s) => s.goalId === goal.id && s.date === date) ||
+        state.suppressedOccurrences?.[goal.id]?.includes(date)
       )
         continue;
       if (
