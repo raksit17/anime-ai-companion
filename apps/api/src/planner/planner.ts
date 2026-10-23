@@ -24,6 +24,8 @@ import {
   normalizePlannerActions,
   parseDurationEdit,
   parseTimeDurationEdit,
+  parseScheduledAdd,
+  completeScheduledAdd,
   simpleAddFromMessage,
   plannerConflictFallback,
   previewDailyCapacityIncrease,
@@ -484,6 +486,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       release = await this.gate.acquire(signal);
     let output: ChatOutput;
     let durationEdit: ReturnType<typeof parseDurationEdit>;
+    let timedAdd: ReturnType<typeof parseScheduledAdd>;
     let blocked: PlannerConstraint | undefined;
     let capacityPreview: DailyCapacityPreview | undefined;
     try {
@@ -518,9 +521,17 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       );
       durationEdit = parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message);
-      const guided = durationEdit ? undefined : explainExtendFollowUp(
-        snapshot, history, dto.message,
-      );
+      timedAdd = durationEdit ? undefined :
+        (parseScheduledAdd(dto.message, dto.date) ??
+          completeScheduledAdd(history, dto.message, dto.date));
+      // A clear clock in a scheduling request must never fall through to
+      // an unconstrained AI add with start omitted or misread.
+      const unparsedClockRequest =
+        !durationEdit && !timedAdd &&
+        /\d{1,2}:\d{2}/u.test(dto.message) &&
+        /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน/u.test(dto.message);
+      const guided = durationEdit || timedAdd || unparsedClockRequest
+        ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
       if (durationEdit) {
         if (durationEdit.command) {
           // An explicit duration request edits the existing session, not a new task.
@@ -537,6 +548,38 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             actions: [],
           };
         }
+      } else if (timedAdd) {
+        if (timedAdd.command) {
+          // Explicit clock and duration: the user, not the model, selects
+          // the start time. The executor may either place it exactly or reject.
+          output = {
+            reply: "ได้เลยค่ะ ฉันจะตรวจช่วงเวลาที่ขอให้ตรงก่อนบันทึกนะ",
+            actions: [timedAdd.command],
+          };
+        } else {
+          blocked = {
+            reason: timedAdd.reason ?? "คำสั่งเพิ่มกิจกรรมยังไม่ครบ",
+            followUps: timedAdd.reason?.includes("นานกี่นาที")
+              ? [
+                  { label: "30 นาที", prompt: "30 นาที" },
+                  { label: "60 นาที", prompt: "60 นาที" },
+                ]
+              : [
+                  { label: "ตรวจตาราง", prompt: "ช่วยแสดงตารางวันที่เลือกเพื่อปรับคำขอใหม่" },
+                ],
+          };
+          output = {
+            reply: timedAdd.reason ?? "ช่วยระบุเวลาให้ชัดเจนอีกนิดนะคะ",
+            actions: [],
+          };
+        }
+      } else if (unparsedClockRequest) {
+        blocked = {
+          reason: "ฉันเห็นเวลาในคำขอ แต่ยังแยกชื่อกิจกรรม วันที่ และระยะเวลาไม่ชัดเจน จึงไม่เพิ่มงานผิดเวลาให้ค่ะ กรุณาระบุรูปแบบ: พรุ่งนี้ เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00",
+          followUps: [{ label: "ดูตาราง", prompt:
+            "แสดงตารางวันที่เลือกและช่วยแนะนำข้อความเพิ่มงานที่มีวัน เวลาเริ่มและระยะเวลาชัดเจน โดยยังไม่บันทึก" }],
+        };
+        output = { reply: blocked.reason, actions: [] };
       } else if (guided) {
         blocked = { reason: guided.reason, followUps: guided.followUps };
         output = { reply: guided.reply, actions: [] };
@@ -691,6 +734,26 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           };
           outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
+        if (result && timedAdd?.command) {
+          const requested = timedAdd.command;
+          const actual = result.sessions.find((item) =>
+            item.date === requested.date &&
+            item.name === requested.name &&
+            item.start === requested.start &&
+            item.duration === requested.duration &&
+            !s.sessions.some((prior) => prior.id === item.id),
+          );
+          if (!actual) {
+            blocked = {
+              reason: "ระบบตรวจพบว่าเวลาและระยะเวลาที่จัดไม่ตรงกับคำขอ จึงไม่บันทึกตาราง",
+              followUps: [{ label: "ดูเวลาว่างอื่น", prompt:
+                "ช่วยเสนอเวลาว่างอื่นสำหรับกิจกรรมนี้ก่อน ฉันจะยืนยันเอง" }],
+            };
+            output = { reply: blocked.reason, actions: [] };
+            outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
+            result = undefined;
+          }
+        }
         if (result) {
           // A verified change receipt is generated from actual persisted-state
           // differences, never from the model's claimed actions or prose.
@@ -744,12 +807,15 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           }
           // The action is backed by the validated schedule, not a possibly
           // hallucinatory time in the model's conversational reply.
-          const exactRequest = simpleAddFromMessage(dto.message);
+          const exactRequest = timedAdd?.command ??
+            simpleAddFromMessage(dto.message);
           if (exactRequest) {
             const added = result.sessions.find(
               (next) =>
                 next.date === exactRequest.date &&
                 next.name === exactRequest.name &&
+                next.duration === exactRequest.duration &&
+                (exactRequest.start === undefined || next.start === exactRequest.start) &&
                 !s.sessions.some((old) => old.id === next.id),
             );
             if (added) {

@@ -7,6 +7,8 @@ import {
   parseChatOutput,
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
+  parseScheduledAdd,
+  completeScheduledAdd,
   parseDurationEdit,
   parseTimeDurationEdit,
   normalizePlannerActions,
@@ -1073,4 +1075,168 @@ test("repeated deletion cannot remove an unrelated slot", async () => {
   await assert.rejects(() => p.removeSession("obsolete-skipped"));
   assert.deepEqual((await p.get()).sessions.map((s: any) => s.id),
     ["real-exercise", "completed-work"]);
+});
+
+const refClock = Date.parse("2026-10-23T22:45:00+07:00");
+const tomorrowOfScreenshot = "2026-10-24";
+
+test("Thai tomorrow date + exact 15:00–16:00 + explicit 60 minutes is parsed without model", () => {
+  const req = "พรุ่งนี้ 24 ตุลาคม เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที ลงในตารางจริง";
+  assert.deepEqual(parseScheduledAdd(req, "2026-10-23", refClock), {
+    command: {
+      type: "add", name: "ฝึก Code", date: tomorrowOfScreenshot,
+      start: 900, duration: 60, fixed: false,
+    },
+  });
+  assert.deepEqual(parseScheduledAdd(
+    "พรุ่งนี้ เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00",
+    "2026-10-23", refClock,
+  )?.command?.duration, 60);
+});
+
+test("explicit day disagreement and duration mismatch are clarified without saving", () => {
+  const wrongDate = parseScheduledAdd(
+    "พรุ่งนี้ 25 ตุลาคม เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที",
+    "2026-10-23", refClock,
+  );
+  assert.match(wrongDate?.reason ?? "", /ไม่ตรงกัน/);
+  const wrongDuration = parseScheduledAdd(
+    "พรุ่งนี้ เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 30 นาที",
+    "2026-10-23", refClock,
+  );
+  assert.match(wrongDuration?.reason ?? "", /ไม่ตรง/);
+  assert.equal(parseScheduledAdd("พรุ่งนี้อยากรู้ว่าตารางว่างไหม", "2026-10-23", refClock), undefined);
+});
+
+test("clock-only Thai prompt asks duration and follow-up retains tomorrow at 15:00", () => {
+  const request = "ฝึก code ช่วงบ่าย 15:00 พรุ่งนี้";
+  const parsed = parseScheduledAdd(request, "2026-10-23", refClock);
+  assert.match(parsed?.reason ?? "", /นานกี่นาที/);
+  const followup = completeScheduledAdd([
+    { role: "user", content: request },
+    {
+      role: "assistant", content: parsed!.reason!,
+      outcome: "ยังไม่ได้เปลี่ยนตาราง · " + parsed!.reason!,
+    },
+  ], "60 นาที", "2026-10-23", refClock);
+  assert.deepEqual(followup?.command, {
+    type: "add", name: "ฝึก code", date: tomorrowOfScreenshot,
+    start: 900, duration: 60, fixed: false,
+  });
+  assert.equal(completeScheduledAdd([], "60 นาที", "2026-10-23", refClock), undefined);
+});
+
+test("explicit-time add must never fall back to the first free morning slot", () => {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions.push({
+    id: "busy", name: "Existing afternoon item", date: date,
+    start: 900, duration: 60, status: "planned",
+    reminder: 10, fixed: false,
+  });
+  assert.throws(() => executeCommands(state, [
+    { type: "add", name: "ฝึก Code", date, start: 900, duration: 60, fixed: false },
+  ], date, now), /15:00–16:00/);
+  assert.equal(state.sessions.length, 1);
+  const flexible = executeCommands(state, [
+    { type: "add", name: "Flexible reading", date, duration: 60, fixed: false },
+  ], date, now);
+  assert.equal(flexible.sessions.length, 2);
+  assert.equal(flexible.sessions[1].start, 480);
+});
+
+test("chat commits exact 15:00–16:00 task and reports its validated receipt", async () => {
+  const seed = initial();
+  seed.settings.maxMinutes = 720;
+  seed.sessions.push({
+    id: "preceding", name: "Anime AI Companion", date: tomorrowOfScreenshot,
+    start: 825, duration: 60, fixed: false, status: "planned", reminder: 10,
+  });
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => { throw new Error("should not ask AI to invent exact add time"); };
+  const request = {
+    ...dto,
+    requestId: "strict-15:00",
+    date: "2026-10-23",
+    message: "พรุ่งนี้ 24 ตุลาคม เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที ลงในตารางจริง",
+  };
+  // Chat parses tomorrow relative to the actual clock, not the 2030 test fixture clock.
+  const response = await p.chat(request);
+  assert.equal(response.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(response.message.content, /15:00–16:00/);
+  assert.equal(response.message.appliedChanges.length, 1);
+  assert.equal(response.message.appliedChanges[0].start, 900);
+  assert.equal(response.message.appliedChanges[0].duration, 60);
+  assert.equal(response.message.appliedChanges[0].date, tomorrowOfScreenshot);
+  assert.equal((await p.get()).sessions.find((x: any) => x.name === "ฝึก Code").start, 900);
+  assert.equal((await p.chat(request)).message.id, response.message.id);
+  assert.equal((await p.get()).sessions.length, 2);
+});
+
+test("exact-time conflict is a conversation rejection, never silently saves another slot", async () => {
+  const seed = initial();
+  seed.settings.maxMinutes = 720;
+  seed.sessions.push({
+    id: "busy", name: "Afternoon appointment", date: tomorrowOfScreenshot,
+    start: 900, duration: 60, fixed: true, status: "planned", reminder: 10,
+  });
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => { throw new Error("explicit add should not need model"); };
+  const reply = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "conflicted-15",
+    message: "พรุ่งนี้ 24 ตุลาคม เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที",
+  });
+  assert.match(reply.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(reply.message.content, /15:00/);
+  assert.ok(reply.message.followUps?.some((f: any) => f.label === "เสนอเวลาอื่น"));
+  assert.equal(reply.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 1);
+});
+
+test("missing duration asks a follow-up rather than claiming to have saved an activity", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => { throw new Error("missing duration must bypass the model"); };
+  const reply = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "duration-not-given",
+    message: "ฝึก code ช่วงบ่าย 15:00 พรุ่งนี้",
+  });
+  assert.match(reply.message.content, /นานกี่นาที/);
+  assert.match(reply.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal(reply.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("unparsed explicit-clock add can never be saved at an arbitrary time by the model", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => {
+    throw new Error("ambiguous explicit clock must bypass the model");
+  };
+  const result = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "unparsed-exact-time",
+    message: "ถ้าฉันอยากเพิ่มฝึก Code ตอน 15:00 พรุ่งนี้ ทำได้ไหม?",
+  });
+  assert.match(result.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(result.message.content, /ยังแยกชื่อกิจกรรม/);
+  assert.equal(result.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("exact-time request with missing duration may be completed through the next reply", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => {
+    throw new Error("duration follow-up must preserve the original exact time");
+  };
+  const first = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "needs-duration",
+    message: "ฝึก code ช่วงบ่าย 15:00 พรุ่งนี้",
+  });
+  assert.match(first.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  const second = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "provided-duration",
+    message: "60 นาที",
+  });
+  assert.equal(second.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(second.message.appliedChanges?.[0]?.start, 900);
+  assert.equal(second.message.appliedChanges?.[0]?.duration, 60);
+  assert.equal(second.message.appliedChanges?.[0]?.date, tomorrowOfScreenshot);
 });
