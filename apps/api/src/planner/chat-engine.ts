@@ -32,6 +32,146 @@ const formatMinutes = (minutes: number) =>
  * When a single plainly phrased add request has an explicit duration, parse it
  * deterministically rather than letting a small local model invent a date.
  */
+
+/** Hard scheduling request. Time and date come from user text, not from
+ * a model's preferred hours; missing duration is a clarification, never a save.
+ */
+export type ScheduledAddIntent = {
+  command?: Command;
+  reason?: string;
+};
+const thaiMonths: Record<string, number> = {
+  มกราคม: 1, กุมภาพันธ์: 2, มีนาคม: 3, เมษายน: 4,
+  พฤษภาคม: 5, มิถุนายน: 6, กรกฎาคม: 7, สิงหาคม: 8,
+  กันยายน: 9, ตุลาคม: 10, พฤศจิกายน: 11, ธันวาคม: 12,
+};
+const thaiMonthPattern =
+  /(\d{1,2})\s*(มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)(?:\s*(\d{4}))?/u;
+const formatDay = (year: number, month: number, day: number) =>
+  String(year).padStart(4, "0") + "-" +
+  String(month).padStart(2, "0") + "-" + String(day).padStart(2, "0");
+const localTime = (hours: string, minutes: string) =>
+  Number(hours) * 60 + Number(minutes);
+const durationFromUnit = (amount: string, unit: string) =>
+  Number(amount) * (unit === "ชั่วโมง" ? 60 : 1);
+
+export function parseScheduledAdd(
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const text = message.trim();
+  // Restrict this deterministic path to single create/schedule requests.
+  // General questions, comments, edits and multi-task prompts still use chat.
+  let input = text;
+  const relative = input.match(/(?:^|\s)(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืนนี้|มะรืน)(?=\s|$)/u);
+  const explicitIso = input.match(/\b\d{4}-\d{2}-\d{2}\b/u);
+  const namedDate = input.match(thaiMonthPattern);
+  let date = selected;
+  let relativeDate: string | undefined;
+  if (relative) {
+    const delta = relative[1] === "วันนี้" ? 0 :
+      ["พรุ่งนี้", "พรุ้งนี้"].includes(relative[1]) ? 1 : 2;
+    relativeDate = new Date(Date.parse(today(now)) + delta * 86400000)
+      .toISOString().slice(0, 10);
+    date = relativeDate;
+    input = input.replace(relative[0], " ");
+  }
+  if (explicitIso) {
+    if (!validDate(explicitIso[0]))
+      return { reason: "วันที่ที่ระบุไม่ถูกต้อง" };
+    date = explicitIso[0];
+    input = input.replace(explicitIso[0], " ");
+  }
+  if (namedDate) {
+    const day = Number(namedDate[1]);
+    const month = thaiMonths[namedDate[2]];
+    const nowYear = Number(today(now).slice(0, 4));
+    const explicitYear = namedDate[3] ? Number(namedDate[3]) : undefined;
+    const year = explicitYear
+      ? explicitYear > 2400 ? explicitYear - 543 : explicitYear
+      : relativeDate ? Number(relativeDate.slice(0, 4)) : nowYear;
+    let candidate = formatDay(year, month, day);
+    if (!explicitYear && !relativeDate && candidate < today(now))
+      candidate = formatDay(year + 1, month, day);
+    if (!validDate(candidate))
+      return { reason: "วันที่ภาษาไทยที่ระบุไม่ถูกต้อง" };
+    if (explicitIso && explicitIso[0] !== candidate)
+      return { reason: "วันที่สองรูปแบบไม่ตรงกัน กรุณาระบุวันที่เดียว" };
+    date = candidate;
+    input = input.replace(namedDate[0], " ");
+  }
+  if (relativeDate && date !== relativeDate)
+    return { reason: "วันที่ที่ระบุกับคำว่าพรุ่งนี้ไม่ตรงกัน กรุณายืนยันวันที่อีกครั้ง" };
+
+  const timeRange =
+    /(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?)?\s*(?:บ่าย|เช้า|เย็น)?\s*(\d{1,2}):(\d{2})\s*(?:-|–|—|ถึง)\s*(\d{1,2}):(\d{2})\s*(?:น\.?|นาฬิกา)?/u;
+  const range = input.match(timeRange);
+  const singleTime =
+    /(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?)\s*(?:บ่าย|เช้า|เย็น)?\s*(\d{1,2}):(\d{2})\s*(?:น\.?|นาฬิกา)?/u;
+  const time = range ?? input.match(singleTime);
+  if (!time) return undefined;
+  // No guessed event when the user is simply asking about free time.
+  input = input.replace(time[0], " ");
+  const durationMatch = input.match(/(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(\d{1,3})\s*(ชั่วโมง|นาที)/u);
+  if (durationMatch) input = input.replace(durationMatch[0], " ");
+  input = input
+    .replace(/^(?:ขอ|ช่วย|อยากให้|ให้ยูนะ)\s*/u, "")
+    .replace(/^(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|จัด(?:ตาราง)?(?:งาน|กิจกรรม)?|ลงตาราง)\s*/u, "")
+    .replace(/(?:ลงในตารางจริง|ลงตาราง|ในตาราง|ให้ด้วย|ด้วย|หน่อย|นะ|ค่ะ|ครับ)\s*$/u, "")
+    .trim();
+  // Avoid treating questions like "ว่างช่วง 15:00 ไหม" as add requests.
+  if (!/^(?:ฝึก|ทำ|เขียน|อ่าน|เรียน|ติว|ออกกำลัง|ออกกำลังกาย|Coding|Code|[A-Za-z])/iu.test(input) &&
+      !/^(?:เพิ่ม|จัด|ช่วยเพิ่ม|ช่วยจัด)/u.test(text.replace(/^(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืนนี้|มะรืน)\s*/u, "")) &&
+      !/(?:เพิ่มงาน|เพิ่มกิจกรรม|เพิ่มกำหนดการ)/u.test(text))
+    return undefined;
+  const name = input.replace(/\s+/g, " ");
+  if (!name || name.length > 120 || !validDate(date))
+    return { reason: "ยังระบุชื่อกิจกรรมหรือวันที่ไม่ชัดเจน" };
+  const start = localTime(time[1], time[2]);
+  if (start > 1439 || Number(time[2]) > 59)
+    return { reason: "เวลาเริ่มไม่ถูกต้อง" };
+  const end = range ? localTime(range[3], range[4]) : undefined;
+  if (range && (end! > 1440 || Number(range[4]) > 59 || end! <= start))
+    return { reason: "เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่มในวันเดียวกัน" };
+  const duration = durationMatch
+    ? durationFromUnit(durationMatch[1], durationMatch[2])
+    : end === undefined ? undefined : end - start;
+  if (duration === undefined)
+    return { reason: "อยากให้ฉันจัด " + name + " วันที่ " + date +
+      " เริ่ม " + formatMinutes(start) + " นานกี่นาทีคะ? ฉันยังไม่ได้เพิ่มตารางนะ" };
+  if (!Number.isInteger(duration) || duration < 5 || duration > 240)
+    return { reason: "ระยะเวลากิจกรรมต้องอยู่ระหว่าง 5–240 นาที" };
+  if (end !== undefined && end !== start + duration)
+    return { reason: "ระยะเวลา " + duration +
+      " นาทีไม่ตรงกับเวลา " + formatMinutes(start) + "–" +
+      formatMinutes(end) + " กรุณาเลือกค่าเดียวกัน" };
+  return { command: { type: "add", name, date, start, duration, fixed: false } };
+}
+
+/** If a user answers the missing-duration question, complete only the last
+ * rejected timed addition, without reinterpreting unrelated earlier chats. */
+export function completeScheduledAdd(
+  history: { role: string; content: string; outcome?: string }[],
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const answer = message.trim().match(/^(?:ใช้เวลา|ระยะเวลา|นาน)?\s*(\d{1,3})\s*(นาที|ชั่วโมง)\s*(?:ค่ะ|ครับ|นะ|เลย)?$/u);
+  if (!answer || history.length < 2) return undefined;
+  const previousReply = history[history.length - 1];
+  const previousUser = history[history.length - 2];
+  if (previousReply.role !== "assistant" ||
+      !previousReply.outcome?.startsWith("ยังไม่ได้เปลี่ยนตาราง") ||
+      previousUser.role !== "user") return undefined;
+  const pending = parseScheduledAdd(previousUser.content, selected, now);
+  if (!pending?.reason?.includes("นานกี่นาที")) return undefined;
+  return parseScheduledAdd(
+    previousUser.content + " ระยะเวลา " + answer[1] + " " + answer[2],
+    selected, now,
+  );
+}
+
 export function simpleAddFromMessage(message: string, now = Date.now()): Command | undefined {
   const match = message.trim().match(
     /^(วันนี้|พรุ่งนี้|มะรืน(?:นี้)?)\s*เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?\s*(.+?)\s*(?:อีก\s*)?(\d{1,3})\s*(ชั่วโมง|นาที)\s*(?:ด้วย|หน่อย|นะ|ค่ะ|ครับ)?\s*$/u,
@@ -472,13 +612,15 @@ export function executeCommands(
         state.sessions = result.sessions;
         notices.push(...result.reasons, ...result.unscheduled);
       } else {
-        const start = [
-          s.start,
-          ...Array.from({ length: 96 }, (_, i) => i * 15),
-        ].find((start) => fits(state, { ...s, start }, now));
+        // A provided start is an exact user constraint. Only unspecified
+        // start times may be automatically placed at the next free slot.
+        const start = a.start !== undefined
+          ? (fits(state, s, now) ? s.start : undefined)
+          : [s.start, ...Array.from({ length: 96 }, (_, i) => i * 15)]
+              .find((candidate) => fits(state, { ...s, start: candidate }, now));
         if (start === undefined)
           throw new Error(
-            `ไม่มีช่วงว่างที่ผ่านเงื่อนไขสำหรับ ${s.name} วันที่ ${date}`,
+            `ไม่สามารถเพิ่ม ${s.name} วันที่ ${date} เวลา ${formatMinutes(s.start)}–${formatMinutes(s.start + s.duration)} ตามที่ขอได้ เพราะชนกิจกรรมเดิม เวลาพัก เวลานอน หรือเพดานรายวัน — ยังไม่ได้เปลี่ยนตาราง`,
           );
         state.sessions.push({ ...s, start });
       }
