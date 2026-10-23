@@ -651,3 +651,89 @@ test("chat short extension follow-up does not silently change bedtime or quota",
   assert.equal((await p.get()).sessions.length, 4);
   assert.equal((await p.get()).settings.sleep, 1320);
 });
+
+test("automatic add returns a durable receipt with the actual tomorrow date, time, and task ID", async () => {
+  const tomorrow = new Date(Date.parse(today()) + 86400000)
+    .toISOString().slice(0, 10);
+  const { p, ai } = fixture(fourMorningActivities(tomorrow));
+  ai.plannerCompletion = async () =>
+    JSON.stringify({
+      reply: "เสร็จแล้วค่ะ",
+      actions: [],
+    });
+  const dtoForTomorrow = {
+    ...dto,
+    requestId: "receipt-tomorrow",
+    date: today(),
+    message: "พรุ่งนี้ เพิ่มงานปรับปรุง Anime AI Companion อีก 1 ชั่วโมง",
+  };
+  const response = await p.chat(dtoForTomorrow);
+  assert.equal(response.message.appliedChanges.length, 1);
+  const receipt = response.message.appliedChanges[0];
+  assert.equal(receipt.kind, "created");
+  assert.equal(receipt.name, "ปรับปรุง Anime AI Companion");
+  assert.equal(receipt.date, tomorrow);
+  assert.equal(receipt.start, 780);
+  assert.equal(receipt.duration, 60);
+  const state = await p.get();
+  assert.equal(state.sessions.find((s: any) => s.id === receipt.id)?.date, tomorrow);
+  assert.equal(state.sessions.find((s: any) => s.id === receipt.id)?.start, 780);
+  assert.deepEqual((await p.history("yuna")).at(-1).appliedChanges, response.message.appliedChanges);
+  const repeat = await p.chat(dtoForTomorrow);
+  assert.equal(repeat.message.id, response.message.id);
+  assert.deepEqual(repeat.message.appliedChanges, response.message.appliedChanges);
+  assert.equal((await p.get()).sessions.length, 5);
+});
+
+test("progress changes return updated receipt instead of misreporting a new task", async () => {
+  const state = initial();
+  state.sessions.push({
+    id: "english-tomorrow",
+    goalId: "daily:english-tomorrow",
+    name: "English",
+    date: future,
+    start: 600,
+    duration: 30,
+    status: "planned",
+    fixed: false,
+    reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => JSON.stringify({
+    reply: "เรียบร้อยค่ะ",
+    actions: [{ type: "done", id: "english-tomorrow" }],
+  });
+  const response = await p.chat({ ...dto, requestId: "mark-done" });
+  assert.equal(response.message.appliedChanges.length, 1);
+  assert.deepEqual(response.message.appliedChanges[0], {
+    id: "english-tomorrow",
+    name: "English",
+    date: future,
+    start: 600,
+    duration: 30,
+    status: "done",
+    kind: "updated",
+  });
+  assert.equal((await p.get()).sessions[0].status, "done");
+});
+
+test("no-op planner action does not claim a schedule was saved", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => JSON.stringify({
+    reply: "เรียบร้อยแล้วค่ะ",
+    actions: [{ type: "adapt", date: future, energy: "normal" }],
+  });
+  const reply = await p.chat({ ...dto, requestId: "no-op-plan" });
+  assert.equal(reply.message.outcome, "ไม่มีการเปลี่ยนแปลงตาราง");
+  assert.match(reply.message.content, /ไม่มีรายการในตารางเปลี่ยนแปลง/);
+  assert.equal(reply.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("preview-only chat never emits an applied-change receipt", async () => {
+  const { p } = fixture();
+  const reply = await p.chat({ ...dto, requestId: "receipt-preview", autoApply: false });
+  assert.ok(reply.proposal);
+  assert.equal(reply.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
+});
