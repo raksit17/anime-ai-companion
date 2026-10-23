@@ -54,3 +54,9 @@ model Memory {
  updatedAt DateTime @updatedAt
  @@index([characterId,importance])
 }
+
+// Single-user local planner; proposals and revision are committed atomically.
+model PlannerStore {
+ id String @id
+ data Json
+}

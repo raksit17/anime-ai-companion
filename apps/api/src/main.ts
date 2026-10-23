@@ -1,4 +1,5 @@
 import "reflect-metadata";
+import { PlannerModule } from "./planner/planner";
 import "dotenv/config";
 import { LocalAuthGuard, allowedOrigins } from "./auth";
 import { RuntimeController } from "./runtime.controller";
@@ -40,7 +41,13 @@ class ApiErrors implements ExceptionFilter {
   }
 }
 @Module({
-  imports: [ResourceModule, LocalAiModule, VoiceModule, VisionModule],
+  imports: [
+    PlannerModule,
+    ResourceModule,
+    LocalAiModule,
+    VoiceModule,
+    VisionModule,
+  ],
   controllers: [ApiController, RuntimeController],
   providers: [Database, ChatGateway, OllamaService],
 })
