@@ -524,9 +524,14 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       timedAdd = durationEdit ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
-      const guided = durationEdit || timedAdd ? undefined : explainExtendFollowUp(
-        snapshot, history, dto.message,
-      );
+      // A clear clock in a scheduling request must never fall through to
+      // an unconstrained AI add with start omitted or misread.
+      const unparsedClockRequest =
+        !durationEdit && !timedAdd &&
+        /\d{1,2}:\d{2}/u.test(dto.message) &&
+        /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน/u.test(dto.message);
+      const guided = durationEdit || timedAdd || unparsedClockRequest
+        ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
       if (durationEdit) {
         if (durationEdit.command) {
           // An explicit duration request edits the existing session, not a new task.
@@ -568,6 +573,13 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             actions: [],
           };
         }
+      } else if (unparsedClockRequest) {
+        blocked = {
+          reason: "ฉันเห็นเวลาในคำขอ แต่ยังแยกชื่อกิจกรรม วันที่ และระยะเวลาไม่ชัดเจน จึงไม่เพิ่มงานผิดเวลาให้ค่ะ กรุณาระบุรูปแบบ: พรุ่งนี้ เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00",
+          followUps: [{ label: "ดูตาราง", prompt:
+            "แสดงตารางวันที่เลือกและช่วยแนะนำข้อความเพิ่มงานที่มีวัน เวลาเริ่มและระยะเวลาชัดเจน โดยยังไม่บันทึก" }],
+        };
+        output = { reply: blocked.reason, actions: [] };
       } else if (guided) {
         blocked = { reason: guided.reason, followUps: guided.followUps };
         output = { reply: guided.reply, actions: [] };
