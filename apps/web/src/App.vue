@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import DailyPlanner from "./components/DailyPlanner.vue";
 import DesktopSettings from "./components/DesktopSettings.vue";
 import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";
@@ -343,6 +344,7 @@ async function deleteCharacter() {
       </main>
       <section class="chat-panel">
         <nav>
+          <button :class="{ active: tab === 'planner' }" @click="tab = 'planner'">แผนชีวิต</button>
           <button :class="{ active: tab === 'chat' }" @click="tab = 'chat'">
             บทสนทนา</button
           ><button
@@ -428,7 +430,8 @@ async function deleteCharacter() {
             ประวัติและความจำเก็บในฐานข้อมูลบนเครื่องคุณ
           </p></template
         >
-        <div v-else class="memory-panel">
+        <DailyPlanner v-show="tab === 'planner'" />
+        <div v-if="tab === 'memory'" class="memory-panel">
           <p class="eyebrow">THINGS TO REMEMBER</p>
           <h2>ให้ฉันจำเรื่องของคุณ</h2>
           <p class="muted">

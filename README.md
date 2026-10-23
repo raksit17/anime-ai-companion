@@ -133,3 +133,58 @@ npm test
 
 รายละเอียด tests และ Windows smoke checklist อยู่ `VALIDATION.md`
 การตั้งค่า PyThaiTTS / VoxCPM2 / GPU queue และ voice assets ดู README-PHASE2.md
+
+## AI Daily Life Planner
+
+Open **แผนชีวิต** in the main window. Run migrations before starting the upgraded API:
+
+```sh
+npm install
+npm run generate
+npm run db:migrate
+npm run dev
+# or npm run desktop:dev
+```
+
+The planner uses the existing `DATABASE_URL`, local API authentication, and
+`OLLAMA_URL` / `OLLAMA_MODEL` (or the configured LocalAI chat provider). No new
+cloud account or Redis service is required.
+
+- Add/edit goals with selected weekdays, duration, preferred time, priority,
+  flexibility, reminder lead time, and rest days between sessions.
+- Set the waking window, breaks, and daily goal-minute budget. This first version
+  explicitly uses **Asia/Bangkok (UTC+7)** and a same-day waking window.
+- Add locked appointments (including meals) before generating a plan. Conflicting
+  appointments are rejected; move a flexible session or skip it first.
+- Preview seven days and confirm to save. The deterministic scheduler respects
+  existing sessions, rest days, breaks, sleep, priority, and daily capacity.
+  Unscheduled work is reported, never silently piled onto tomorrow.
+- Low energy shortens **new** sessions to at most 20 minutes. Existing sessions
+  remain intact. Move an existing flexible session through a separate preview.
+- Mark sessions done/skipped and record notes (exercise sets/reps/weight, English
+  topics, coding progress). Cumulative completed minutes and counts are shown.
+- Ask the local AI for advice using the actual goals, schedule, and progress.
+  Advice is read-only: it cannot claim to commit changes or bypass constraints.
+  AI requests share the existing GPU resource gate and have a bounded timeout;
+  deterministic scheduling remains usable when the model is offline.
+- In-app reminders poll every 30 seconds. Browser notifications require an
+  explicit permission click and platform support. **Keep the API and main app
+  window running**; this is not an OS background alarm or push service. Pending
+  reminders are recovered while their session is still ongoing; acknowledgement
+  is saved in PostgreSQL.
+
+Planner data is single-user and shared across companion characters, protected by
+existing local API auth. A PostgreSQL transaction/advisory lock serializes writes.
+Proposals expire after 15 minutes and become invalid after any state mutation;
+confirmation is single-use. Goal edits affect future generation, not historical
+sessions; deleting a goal removes its pending sessions but retains progress.
+
+API prefix: `/v1/planner` — state (`GET`), goals (`POST`, `PATCH/:id`, `DELETE/:id`),
+settings (`PATCH`), proposals (`POST`, `POST/:id/confirm`), events (`POST`),
+sessions (`PATCH/:id`, `POST/:id/move`), reminders (`GET`, `POST/:id/ack`),
+and advice (`POST`). DTO validation rejects unknown fields and out-of-range values.
+
+Current boundaries: no Google Calendar sync, BullMQ/background daemon, automatic
+weekly goal changes, exercise prescription, or dedicated English/coding lesson
+engine. The existing companion chat remains available for practice. Tests cover
+scheduling constraints and proposal/commit/status behavior (`npm test`).

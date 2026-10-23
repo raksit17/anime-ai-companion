@@ -4,12 +4,13 @@ export async function api<T = any>(
   path: string,
   method = "GET",
   body?: unknown,
+  timeoutMs = 15000,
 ): Promise<T> {
   const r = await fetch(base + "/v1" + path, {
     method,
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await r.json();
   if (!r.ok)
