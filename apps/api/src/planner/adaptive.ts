@@ -50,10 +50,11 @@ export function adapt(
   energy: "normal" | "low",
   event?: Omit<Session, "id" | "status" | "fixed" | "reminder">,
   now = Date.now(),
+  horizon = 7,
 ) {
   const state = structuredClone(input),
     review = weeklyReview(input, now),
-    until = addDays(from, 6);
+    until = addDays(from, horizon - 1);
   const reasons: string[] = [],
     unscheduled: string[] = [];
   // Every plan reserves at least 15 minutes between activities. Never change saved settings.

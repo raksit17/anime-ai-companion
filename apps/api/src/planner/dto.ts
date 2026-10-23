@@ -55,3 +55,11 @@ export class ProgressDto {
 export class AdviceDto {
   @IsString() @Matches(/\S/) @MaxLength(2000) message!: string;
 }
+
+export class PlannerChatDto {
+  @IsString() @MaxLength(100) characterId!: string;
+  @IsString() @MaxLength(100) @Matches(/^[\w-]+$/) requestId!: string;
+  @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/) date!: string;
+  @IsString() @Matches(/\S/) @MaxLength(4000) message!: string;
+  @IsBoolean() autoApply!: boolean;
+}

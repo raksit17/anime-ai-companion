@@ -222,7 +222,7 @@ async function deleteCharacter() {
         }}<span class="local">LOCAL FIRST</span>
       </div>
     </header>
-    <div class="workspace">
+    <div class="workspace" :class="{ planning: tab === 'planner' }">
       <aside class="sidebar">
         <p class="eyebrow">YOUR COMPANION</p>
         <select
@@ -554,3 +554,10 @@ async function deleteCharacter() {
     </div>
   </div>
 </template>
+
+<style>
+.workspace.planning { grid-template-columns: 210px minmax(0, 1fr); }
+.workspace.planning .character-stage { display:none; }
+.workspace.planning .chat-panel { min-width:0; }
+@media(max-width:900px){.workspace.planning{grid-template-columns:minmax(0,1fr)}.workspace.planning .sidebar{display:none}}
+</style>

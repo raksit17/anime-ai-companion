@@ -113,6 +113,13 @@ export class LocalAiService {
     if (typeof text !== "string" || !text.trim()) throw new BadGatewayException("LocalAI returned empty text");
     return text.trim();
   }
+  async plannerCompletion(messages:ChatMessage[], signal:AbortSignal) {
+    const response=await this.request('/v1/chat/completions',{method:'POST',headers:this.headers(true),body:JSON.stringify({model:process.env.LOCALAI_CHAT_MODEL??'qwen3-4b',messages,stream:false,temperature:0.2,max_tokens:3000,response_format:{type:'json_object'}})},signal);
+    const data=await response.json() as any;
+    const choice=data.choices?.[0];
+    if(choice?.finish_reason!=='stop'||!choice.message?.content)throw new Error('คำตอบจากโมเดลไม่ครบ ไม่มีการเปลี่ยนตาราง');
+    return String(choice.message.content);
+  }
   async translateToEnglish(content: string, signal: AbortSignal): Promise<string> {
     return this.completion(
       process.env.LOCALAI_CHAT_MODEL ?? "qwen3-4b",

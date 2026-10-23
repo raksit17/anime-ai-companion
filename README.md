@@ -254,3 +254,47 @@ New API routes: `POST /v1/planner/adaptive` (`date`, `energy`),
 `POST /v1/planner/weekly-review`. No additional migration is required beyond the
 initial `PlannerStore` migration. The API/model must be running for automated
 analysis; it catches up after restart rather than waking a powered-off computer.
+
+### Conversational daily planner and calendar
+
+The main **แผนชีวิต** tab now shows a day timeline, week strip and month picker
+alongside a persistent conversation with the selected companion. The large forms
+and weekly report remain under **ตั้งค่าเพิ่มเติม**. The planner takes the wider
+workspace while open instead of squeezing the schedule into the old chat column.
+
+Examples:
+
+- `วันนี้ฝึกอังกฤษ 30 นาที Coding 2 ชั่วโมง มีนัด 14:00 หนึ่งชั่วโมง`
+- `วันนี้เหนื่อย ช่วยลดภาระให้หน่อย`
+- `เลื่อน Coding ไปพรุ่งนี้ 10:00`
+- `วันนี้เหลืออะไรต้องทำบ้าง`
+
+The selected character's actual name, personality, system prompt, top memories,
+and recent planner conversation are included in the model context. Planner chat
+uses a concise Thai reply and renders the full schedule separately. It keeps up
+to 80 messages per character in PlannerStore; regular companion chat is separate.
+
+**จัดตารางทันทีเมื่อฉันสั่ง** is enabled by default. Explicit scheduling commands
+are validated and applied atomically; questions create no changes. Disable it for
+preview/confirmation mode. Ambiguous requests should trigger a clarification.
+The application rejects invalid dates, unknown session IDs, collisions, missing
+appointment times, capacity violations and incomplete model JSON. Failed batches
+write neither sessions nor conversation. Request IDs prevent duplicate mutations
+on retries while the matching history remains retained. Concurrent schedule
+changes cause a conflict instead of overwriting the current calendar.
+
+Single-day tasks require no recurring goal setup. Tired/adaptive chat commands
+adjust only the selected day, preserve fixed and started work, and leave
+unschedulable work visibly deferred. A new fixed appointment or an explicitly moved task can reflow that day's
+other flexible tasks. Fixed appointments and started activities stay protected. Time ranges use a 24-hour clock in Asia/Bangkok. Chat scheduling
+keeps at least 15-minute breaks and uses the saved wake/sleep/daily-capacity limits;
+change these in advanced settings when needed. It does not infer energy or
+external appointments without a user message.
+
+`GET /v1/planner/chat?characterId=...` loads history;
+`POST /v1/planner/chat` takes `characterId`, `requestId`, `date`, `message`,
+`autoApply`. Ollama uses structured JSON output, a 16K context and a 3000-token
+response budget; LocalAI uses JSON-object completion with a 3000-token budget.
+Truncated/malformed replies are errors rather than partially applied schedules.
+The GPU gate and 120-second server deadline are shared with the existing AI path.
+Existing database migration is sufficient; no new migration or cloud dependency.
