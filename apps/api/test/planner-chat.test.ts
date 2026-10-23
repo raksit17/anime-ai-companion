@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import {
   executeCommands,
+  explainPlannerConstraint,
   parseChatOutput,
   plannerMessages,
 } from "../src/planner/chat-engine";
@@ -125,8 +126,8 @@ test("character, memories and conversation history reach model prompt", () => {
   assert.match(p[0].content, /NestJS/);
   assert.equal(p[1].content, "ฉันเหนื่อย");
 });
-function fixture() {
-  let stored: any = initial(),
+function fixture(seed = initial()) {
+  let stored: any = structuredClone(seed),
     calls = 0;
   const db = {
     character: {
@@ -233,4 +234,131 @@ test("moving a flexible task automatically reflows other flexible work", () => {
     target,
   );
   assert.equal(s.sessions[0].start, target);
+});
+
+test("sleep-window rejection becomes a normal companion chat with choices and no mutation", async () => {
+  const state = initial();
+  state.sessions.push({
+    id: "coding",
+    name: "Coding",
+    date: future,
+    start: 16 * 60 + 45,
+    duration: 60,
+    status: "planned",
+    fixed: false,
+    reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  let calls = 0;
+  ai.plannerCompletion = async (messages: {role: string; content: string}[]) => {
+    calls++;
+    if (calls === 1)
+      return JSON.stringify({
+        reply: "ย้ายให้แล้วนะ",
+        actions: [{ type: "move", id: "coding", date: future, start: 1320 }],
+      });
+    assert.ok(messages.some((m) => m.content.includes("REJECTED")));
+    return JSON.stringify({
+      reply: "สี่ทุ่มจะเลยเวลาเข้านอนนะ ยังไม่ได้ย้ายให้ค่ะ อยากหาเวลาอื่นไหม?",
+      actions: [],
+    });
+  };
+  const request = {
+    ...dto,
+    requestId: "sleep-conflict",
+    message: "Coding เลื่อนไป 22:00",
+  };
+  const reply = await p.chat(request);
+  assert.match(reply.message.content, /ยังไม่ได้ย้าย/);
+  assert.match(reply.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.ok(reply.message.followUps?.some((f: any) => f.openSettings));
+  assert.ok(reply.message.followUps?.some((f: any) => f.prompt));
+  assert.equal(reply.proposal, undefined);
+  assert.equal((await p.get()).sessions[0].start, 16 * 60 + 45);
+  assert.equal((await p.history("yuna")).length, 2);
+  assert.equal((await p.chat(request)).message.id, reply.message.id);
+  assert.equal(calls, 2);
+});
+
+test("recovery-model failure falls back to a safe reply even with preview enabled", async () => {
+  const state = initial();
+  state.sessions.push({
+    id: "coding",
+    name: "Coding",
+    date: future,
+    start: 16 * 60 + 45,
+    duration: 60,
+    status: "planned",
+    fixed: false,
+    reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  let calls = 0;
+  ai.plannerCompletion = async () => {
+    if (++calls === 1)
+      return JSON.stringify({
+        reply: "เรียบร้อย!",
+        actions: [{ type: "move", id: "coding", date: future, start: 1320 }],
+      });
+    throw new Error("model temporarily unavailable");
+  };
+  const reply = await p.chat({
+    ...dto,
+    requestId: "recovery-fallback",
+    message: "เลื่อน Coding ไป 22:00",
+    autoApply: false,
+  });
+  assert.match(reply.message.content, /ยูนะ/);
+  assert.match(reply.message.content, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal(reply.proposal, undefined);
+  assert.equal((await p.get()).sessions[0].start, 16 * 60 + 45);
+});
+
+test("recovery model cannot execute a second unvalidated command", async () => {
+  const state = initial();
+  state.sessions.push({
+    id: "coding",
+    name: "Coding",
+    date: future,
+    start: 16 * 60 + 45,
+    duration: 60,
+    status: "planned",
+    fixed: false,
+    reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () =>
+    JSON.stringify({
+      reply: "ย้ายเรียบร้อย!",
+      actions: [{ type: "move", id: "coding", date: future, start: 1320 }],
+    });
+  const reply = await p.chat({
+    ...dto,
+    requestId: "untrusted-recovery",
+    message: "เลื่อน Coding ไป 22:00",
+  });
+  assert.match(reply.message.content, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal((await p.get()).sessions[0].start, 16 * 60 + 45);
+});
+
+test("conflict description reports the actual sleep boundary instead of a generic error", () => {
+  const state = initial();
+  state.sessions.push({
+    id: "coding",
+    name: "Coding",
+    date: future,
+    start: 1000,
+    duration: 60,
+    status: "planned",
+    fixed: false,
+    reminder: 10,
+  });
+  const detail = explainPlannerConstraint(
+    state,
+    [{ type: "move", id: "coding", date: future, start: 1320 }],
+    "generic conflict",
+  );
+  assert.match(detail.reason, /22:00–23:00/);
+  assert.match(detail.reason, /เข้านอน 22:00/);
+  assert.equal(detail.followUps.find((x) => x.openSettings)?.label, "ตั้งค่าเวลานอน");
 });
