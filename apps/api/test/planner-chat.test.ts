@@ -465,7 +465,7 @@ test("chat proposes raising only tomorrow's capacity and adding work together; a
     ...dto,
     requestId: "capacity-one-day",
     date: future,
-    message: "พรุ่งนี้ เพิ่มปรับปรุง anime ai companion อีกหนึ่งชั่วโมง",
+    message: `เพิ่มปรับปรุง anime ai companion อีกหนึ่งชั่วโมง วันที่ ${future}`,
     autoApply: true,
   };
   const response = await p.chat(request);
@@ -512,7 +512,7 @@ test("stale one-day approval is rejected without applying work or changing capac
   const preview = await p.chat({
     ...dto,
     requestId: "capacity-stale",
-    message: "พรุ่งนี้เพิ่ม Project 1 ชั่วโมง",
+    message: `เพิ่ม Project 1 ชั่วโมง วันที่ ${future}`,
   });
   const pending = preview.proposal.id;
   assert.ok(pending);
