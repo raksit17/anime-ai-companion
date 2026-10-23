@@ -10,6 +10,8 @@ import {
   parseScheduledAdd,
   completeScheduledAdd,
   parseDurationEdit,
+  parseConversationalDurationEdit,
+  validateOllamaDurationEdit,
   parseTimeDurationEdit,
   normalizePlannerActions,
   freeStartForAdd,
@@ -1239,4 +1241,160 @@ test("exact-time request with missing duration may be completed through the next
   assert.equal(second.message.appliedChanges?.[0]?.start, 900);
   assert.equal(second.message.appliedChanges?.[0]?.duration, 60);
   assert.equal(second.message.appliedChanges?.[0]?.date, tomorrowOfScreenshot);
+});
+
+function tomorrowWorkday() {
+  const state = durationEditFixture();
+  const tomorrow = new Date(Date.parse(today()) + 86400000)
+    .toISOString().slice(0, 10);
+  for (const s of state.sessions) s.date = tomorrow;
+  return { state, tomorrow };
+}
+
+test("natural Thai duration edits resolve three synonymous requests to the SAME resize", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  for (const prompt of [
+    "หางาน พรุ่งนี้ ขอเพียง 30 นาที",
+    "พรุ่งนี้ลดหางานเหลือครึ่งชั่วโมง",
+    "งานหางานเอาแค่ 30 นาทีพอ",
+    "พรุ่งนี้ หางาน ขอแค่ 30 นาที",
+  ]) {
+    const parsed = parseConversationalDurationEdit(state, tomorrow, prompt);
+    assert.deepEqual(parsed?.command, {
+      type: "resize", id: "job", date: tomorrow, duration: 30,
+    }, prompt);
+    const updated = executeCommands(state, [parsed!.command!], tomorrow);
+    assert.equal(updated.sessions.find((s) => s.id === "job")?.duration, 30);
+    assert.equal(state.sessions.find((s) => s.id === "job")?.duration, 60);
+  }
+});
+
+test("friendly Thai reductions are persisted by Planner chat without consulting Ollama unnecessarily", async () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("simple requests must not depend on model availability");
+  };
+  const request = {
+    ...dto, date: tomorrow, requestId: "job-only-thirty",
+    message: "หางาน พรุ่งนี้ ขอเพียง 30 นาที",
+  };
+  const reply = await p.chat(request);
+  assert.equal(reply.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(reply.message.content, /60 นาที เหลือ 30 นาที/);
+  assert.equal(reply.message.appliedChanges?.length, 1);
+  assert.equal(reply.message.appliedChanges?.[0]?.id, "job");
+  assert.equal(reply.message.appliedChanges?.[0]?.previousDuration, 60);
+  assert.equal(reply.message.appliedChanges?.[0]?.duration, 30);
+  const stateAfter = await p.get();
+  assert.equal(stateAfter.sessions.find((s: any) => s.id === "job")?.duration, 30);
+  assert.equal(stateAfter.sessions.length, 5);
+  assert.equal((await p.chat(request)).message.id, reply.message.id);
+});
+
+test("Ollama can interpret nuanced Thai half-time edits; backend verifies the original text, date and ID", async () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const { p, ai } = fixture(state);
+  let calls = 0;
+  ai.plannerCompletion = async () => {
+    calls++;
+    if (calls === 1)
+      return JSON.stringify({
+        reply: "ขอเช็กคำขอนี้ก่อนนะคะ",
+        actions: [],
+      });
+    return JSON.stringify({
+      reply: "ลองลดเวลาหางานเป็นครึ่งหนึ่งให้นะคะ",
+      actions: [{ type: "resize", id: "job", date: tomorrow, duration: 30 }],
+    });
+  };
+  const response = await p.chat({
+    ...dto, date: tomorrow, requestId: "ollama-half-job",
+    message: "พรุ่งนี้อยากให้ตารางหางานสั้นลงเหลือแค่ครึ่งหนึ่งของเดิม",
+  });
+  assert.equal(calls, 2);
+  assert.equal(response.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(response.message.appliedChanges?.[0]?.duration, 30);
+  assert.equal((await p.get()).sessions.find((s: any) => s.id === "job")?.duration, 30);
+});
+
+test("Ollama is never authorized to change the wrong session or invent a duration", async () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => JSON.stringify({
+    reply: "เรียบร้อยแล้วค่ะ",
+    actions: [{ type: "resize", id: "learning", date: tomorrow, duration: 15 }],
+  });
+  const response = await p.chat({
+    ...dto, date: tomorrow, requestId: "wrong-ollama-resize",
+    message: "พรุ่งนี้อยากให้ตารางหางานสั้นลงเหลือแค่ครึ่งหนึ่งของเดิม",
+  });
+  assert.match(response.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal(response.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.find((s: any) => s.id === "job")?.duration, 60);
+  assert.equal((await p.get()).sessions.find((s: any) => s.id === "learning")?.duration, 90);
+});
+
+test("duplicate names and impossible duration edits never guess which occurrence to change", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  state.sessions.push({ ...state.sessions.find((s) => s.id === "job")!,
+    id: "job-again" });
+  assert.match(
+    parseConversationalDurationEdit(state, tomorrow, "หางาน พรุ่งนี้ ขอเพียง 30 นาที")
+      ?.reason ?? "", /หลายรายการ/,
+  );
+  const original = state.sessions.pop()!;
+  assert.equal(original.id, "job-again");
+  const invalid = parseConversationalDurationEdit(state, tomorrow,
+    "หางาน พรุ่งนี้ ขอเพียง 0 นาที");
+  assert.match(invalid?.reason ?? "", /5–240/);
+  const tiny = parseConversationalDurationEdit(state, tomorrow,
+    "หางาน พรุ่งนี้ ขอเพียง 3 นาที");
+  assert.match(tiny?.reason ?? "", /5–240/);
+});
+
+test("explicit relative increases and decreases do not confuse NEW TOTAL with delta", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const plus = parseConversationalDurationEdit(state, tomorrow,
+    "หางาน พรุ่งนี้ เพิ่มอีก 15 นาที");
+  assert.equal(plus?.command?.duration, 75);
+  const minus = parseConversationalDurationEdit(state, tomorrow,
+    "หางาน พรุ่งนี้ ลดลง 15 นาที");
+  assert.equal(minus?.command?.duration, 45);
+  const set = parseConversationalDurationEdit(state, tomorrow,
+    "หางาน พรุ่งนี้ เอาแค่ครึ่งชั่วโมงพอ");
+  assert.equal(set?.command?.duration, 30);
+});
+
+test("Ollama output validator enforces a grounded target, duration and date", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const command = { type: "resize" as const, id: "job", date: tomorrow, duration: 30 };
+  assert.deepEqual(validateOllamaDurationEdit(
+    state, tomorrow, "อยากให้เวลาหางานสั้นลงเหลือแค่ครึ่งหนึ่งของเดิม",
+    [command],
+  )?.command, command);
+  assert.match(validateOllamaDurationEdit(
+    state, tomorrow, "อยากให้เวลาหางานสั้นลงเหลือแค่ครึ่งหนึ่งของเดิม",
+    [{ ...command, duration: 45 }],
+  )?.reason ?? "", /ไม่ตรง/);
+});
+
+test("multiple mentioned durations choose the requested final total rather than the old one", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const edit = parseConversationalDurationEdit(state, tomorrow,
+    "พรุ่งนี้งานหางาน เดิม 60 นาที ขอเพียง 30 นาทีพอ");
+  assert.equal(edit?.command?.duration, 30);
+  const llm = validateOllamaDurationEdit(state, tomorrow,
+    "พรุ่งนี้อยากให้เวลาหางานจาก 60 นาทีเหลือ 30 นาที",
+    [{ type: "resize", id: "job", date: tomorrow, duration: 30 }]);
+  assert.equal(llm?.command?.duration, 30);
+});
+
+test("a Thai question does not authorize a model-initiated calendar edit", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const response = validateOllamaDurationEdit(state, tomorrow,
+    "ลดเวลาหางานเหลือ 30 นาทีได้ไหม?",
+    [{ type: "resize", id: "job", date: tomorrow, duration: 30 }]);
+  assert.equal(response?.command, undefined);
+  assert.match(response?.reason ?? "", /คำถาม/);
 });
