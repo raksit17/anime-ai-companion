@@ -308,6 +308,69 @@ export function executeCommands(
   }
   return { sessions: state.sessions, notices };
 }
+export type DailyCapacityPreview = {
+  date: string;
+  previousLimit: number;
+  proposedLimit: number;
+  sessions: Session[];
+  notices: string[];
+  activity: string;
+  duration: number;
+};
+
+/** Only one flexible add can request a daily-capacity exception.
+ * Re-run the original command against a cloned state with the proposed limit.
+ * A proposal is returned only when this is sufficient to resolve the rejection;
+ * overlap, bedtime, fixed appointments, and rest constraints still apply.
+ */
+export function previewDailyCapacityIncrease(
+  state: State,
+  commands: Command[],
+  selected: string,
+  now = Date.now(),
+): DailyCapacityPreview | undefined {
+  if (commands.length !== 1) return undefined;
+  const action = commands[0];
+  if (
+    action.type !== "add" ||
+    action.fixed === true ||
+    !action.name?.trim() ||
+    !Number.isInteger(action.duration) ||
+    action.duration! < 5 ||
+    action.duration! > 240
+  )
+    return undefined;
+  const date = action.date ?? selected;
+  if (!validDate(date)) return undefined;
+  const previousLimit = state.capacityOverrides?.[date] ?? state.settings.maxMinutes;
+  const occupied = state.sessions
+    .filter(
+      (session) =>
+        session.date === date &&
+        !!session.goalId &&
+        (session.status === "planned" || session.status === "done"),
+    )
+    .reduce((total, session) => total + session.duration, 0);
+  const proposedLimit = Math.max(previousLimit, occupied + action.duration!);
+  if (proposedLimit <= previousLimit || proposedLimit > 720) return undefined;
+  const sandbox = structuredClone(state);
+  sandbox.capacityOverrides ??= {};
+  sandbox.capacityOverrides[date] = proposedLimit;
+  try {
+    const result = executeCommands(sandbox, commands, selected, now);
+    return {
+      date,
+      previousLimit,
+      proposedLimit,
+      sessions: result.sessions,
+      notices: result.notices,
+      activity: action.name!,
+      duration: action.duration!,
+    };
+  } catch {
+    return undefined;
+  }
+}
 export function plannerMessages(
   character: { name: string; personality: string; systemPrompt: string },
   memories: { content: string }[],

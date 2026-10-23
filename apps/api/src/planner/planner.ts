@@ -21,9 +21,11 @@ import {
   explainPlannerConstraint,
   parseChatOutput,
   plannerConflictFallback,
+  previewDailyCapacityIncrease,
   plannerMessages,
   plannerChatSchema,
   type ChatOutput,
+  type DailyCapacityPreview,
   type PlannerConstraint,
   type PlannerFollowUp,
 } from "./chat-engine";
@@ -61,6 +63,8 @@ type Proposal = {
   expires: number;
   sessions: Session[];
   unscheduled: string[];
+  // Explicit approval is required to apply this one-day exception.
+  capacityOverride?: { date: string; maxMinutes: number; previousLimit: number };
 };
 type PlannerMessage = {
   id: string;
@@ -272,6 +276,22 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         )
       )
         throw new ConflictException("เวลาเริ่มผ่านไปแล้ว กรุณาสร้างแผนใหม่");
+      if (p.capacityOverride) {
+        const { date, maxMinutes, previousLimit } = p.capacityOverride;
+        const currentLimit = s.capacityOverrides?.[date] ?? s.settings.maxMinutes;
+        if (
+          !validDate(date) ||
+          date < today() ||
+          maxMinutes > 720 ||
+          maxMinutes <= currentLimit ||
+          currentLimit !== previousLimit
+        )
+          throw new ConflictException(
+            "เพดานงานเปลี่ยนไปแล้ว กรุณาสร้างตัวอย่างใหม่",
+          );
+        s.capacityOverrides ??= {};
+        s.capacityOverrides[date] = maxMinutes;
+      }
       s.sessions = p.sessions;
       this.changed(s);
       return { ok: true };
@@ -424,6 +444,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       release = await this.gate.acquire(signal);
     let output: ChatOutput;
     let blocked: PlannerConstraint | undefined;
+    let capacityPreview: DailyCapacityPreview | undefined;
     try {
       const relevant = snapshot.sessions.filter(
         (s) =>
@@ -447,6 +468,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           now: new Date().toISOString(),
           timezone: "Asia/Bangkok",
           settings: snapshot.settings,
+          capacityOverrides: snapshot.capacityOverrides ?? {},
           goals: snapshot.goals,
           sessions: relevant,
           weekly: weeklyReview(snapshot),
@@ -468,7 +490,29 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             output.actions,
             (e as Error).message,
           );
-          let reply = plannerConflictFallback(character.name, blocked);
+          capacityPreview = previewDailyCapacityIncrease(
+            snapshot,
+            output.actions,
+            dto.date,
+          );
+          if (capacityPreview) {
+            blocked = {
+              reason: `เพิ่ม ${capacityPreview.activity} อีก ${capacityPreview.duration} นาที วันที่ ${capacityPreview.date} จะทำให้ภาระเกินเพดาน ${capacityPreview.previousLimit} นาที ต้องเพิ่มเป็น ${capacityPreview.proposedLimit} นาที`,
+              followUps: [
+                {
+                  label: "เสนอแผนที่เบาลง",
+                  prompt: `ช่วยเสนอวิธีแบ่งหรือย้ายกิจกรรมของวันที่ ${capacityPreview.date} เพื่อให้เพิ่ม ${capacityPreview.activity} ได้โดยไม่เกินเพดานเดิม ก่อนเปลี่ยนจริงขอให้ฉันเลือกก่อน`,
+                },
+                {
+                  label: "ตั้งค่าภาระงาน",
+                  openSettings: true,
+                },
+              ],
+            };
+          }
+          let reply = capacityPreview
+            ? `อืม… ${blocked.reason} นะ ฉันเตรียมตัวอย่างสำหรับเพิ่มเพดานเฉพาะวันนั้นไว้แล้ว แต่ยังไม่ได้เปลี่ยนตารางค่ะ ถ้าอยากทำเพิ่มจริง ๆ กดยืนยันตัวอย่างด้านล่างได้เลย หรือให้ฉันช่วยแบ่งงานใหม่ก็ได้นะ`
+            : plannerConflictFallback(character.name, blocked);
           try {
             const recovered = parseChatOutput(
               await this.ai.plannerCompletion(
@@ -478,12 +522,20 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                   {
                     role: "system",
                     content:
-                      "Trusted planner validation REJECTED the previous actions. No changes were saved. Speak as the same character in Thai. Briefly explain the validation reason, then ask the user to choose an alternative. Do not claim any schedule or settings changed, and do not change the user's requested time on your own. Return exactly JSON with a natural reply and actions: []. The user must explicitly change sleeping hours in settings.",
+                      "Trusted planner validation REJECTED the previous actions. No changes were saved. Speak as the same character in Thai. Briefly explain the validation reason, then ask the user to choose an alternative. Do not claim any schedule or settings changed, and do not change the user's requested time on your own. Return exactly JSON with a natural reply and actions: []. For capacity-only conflicts, a preview requiring an explicit confirmation has been prepared; tell the user to confirm the preview or ask for a lighter plan. The user must explicitly change sleeping hours in settings.",
                   },
                   {
                     role: "user",
                     content: JSON.stringify({
                       validationReason: blocked.reason,
+                      capacityPreview: capacityPreview
+                        ? {
+                            date: capacityPreview.date,
+                            previousLimit: capacityPreview.previousLimit,
+                            proposedLimit: capacityPreview.proposedLimit,
+                            awaitingExplicitConfirmation: true,
+                          }
+                        : null,
                       availableChoices: blocked.followUps,
                       instruction: "Explain the conflict and ask which option I want.",
                     }),
@@ -518,6 +570,24 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           ? "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason
           : "คำตอบจาก " + character.name,
         proposal: Proposal | undefined;
+      if (capacityPreview) {
+        // Even with autoApply enabled, increasing daily workload requires
+        // the user's separate approval through the existing proposal flow.
+        proposal = {
+          id: randomUUID(),
+          revision: s.revision,
+          expires: Date.now() + 900000,
+          sessions: capacityPreview.sessions,
+          unscheduled: capacityPreview.notices,
+          capacityOverride: {
+            date: capacityPreview.date,
+            maxMinutes: capacityPreview.proposedLimit,
+            previousLimit: capacityPreview.previousLimit,
+          },
+        };
+        s.proposal = proposal;
+        outcome = `รอยืนยัน: เพดานวันที่ ${capacityPreview.date} ${capacityPreview.previousLimit} → ${capacityPreview.proposedLimit} นาที และเพิ่ม ${capacityPreview.activity} · ยังไม่ได้บันทึก`;
+      }
       if (output.actions.length) {
         let result: ReturnType<typeof executeCommands> | undefined;
         try {

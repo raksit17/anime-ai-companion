@@ -26,6 +26,8 @@ export type Session = {
 export type State = {
   goals: Goal[];
   sessions: Session[];
+  // A user-approved exception applies to one calendar day only.
+  capacityOverrides?: Record<string, number>;
   settings: {
     wake: number;
     sleep: number;
@@ -37,6 +39,7 @@ export type State = {
 export const initial = (): State => ({
   goals: [],
   sessions: [],
+  capacityOverrides: {},
   settings: { wake: 480, sleep: 1320, breakMinutes: 15, maxMinutes: 240 },
   revision: 0,
 });
@@ -55,6 +58,7 @@ export function timestamp(date: string, minutes: number) {
 }
 export function fits(state: State, session: Session, now: number) {
   const { wake, sleep, breakMinutes, maxMinutes } = state.settings;
+  const dailyLimit = state.capacityOverrides?.[session.date] ?? maxMinutes;
   const others = state.sessions.filter(
     (s) =>
       s.id !== session.id &&
@@ -73,7 +77,7 @@ export function fits(state: State, session: Session, now: number) {
     (!session.goalId ||
       others.filter((s) => !!s.goalId).reduce((n, s) => n + s.duration, 0) +
         session.duration <=
-        maxMinutes)
+        dailyLimit)
   );
 }
 export function plan(
