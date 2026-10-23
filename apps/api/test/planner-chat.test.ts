@@ -1205,3 +1205,38 @@ test("missing duration asks a follow-up rather than claiming to have saved an ac
   assert.equal(reply.message.appliedChanges, undefined);
   assert.equal((await p.get()).sessions.length, 0);
 });
+
+test("unparsed explicit-clock add can never be saved at an arbitrary time by the model", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => {
+    throw new Error("ambiguous explicit clock must bypass the model");
+  };
+  const result = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "unparsed-exact-time",
+    message: "ถ้าฉันอยากเพิ่มฝึก Code ตอน 15:00 พรุ่งนี้ ทำได้ไหม?",
+  });
+  assert.match(result.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(result.message.content, /ยังแยกชื่อกิจกรรม/);
+  assert.equal(result.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("exact-time request with missing duration may be completed through the next reply", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => {
+    throw new Error("duration follow-up must preserve the original exact time");
+  };
+  const first = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "needs-duration",
+    message: "ฝึก code ช่วงบ่าย 15:00 พรุ่งนี้",
+  });
+  assert.match(first.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  const second = await p.chat({
+    ...dto, date: "2026-10-23", requestId: "provided-duration",
+    message: "60 นาที",
+  });
+  assert.equal(second.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(second.message.appliedChanges?.[0]?.start, 900);
+  assert.equal(second.message.appliedChanges?.[0]?.duration, 60);
+  assert.equal(second.message.appliedChanges?.[0]?.date, tomorrowOfScreenshot);
+});
