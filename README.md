@@ -1,5 +1,29 @@
 # Anime AI Companion — Phase 3 + optional Phase 4 LocalAI
 
+
+## Docker + โทรศัพท์ (LAN / Windows)
+
+เรียกใช้ NestJS API, PostgreSQL และ Vue Web ผ่าน Docker ได้ พร้อมเปิดจากมือถือ
+ใน Wi-Fi เดียวกันที่ `http://<PC-IP>:5175` โดย API/WebSocket จะวิ่งผ่าน
+nginx origin เดียวกัน โทรศัพท์จึงไม่ต้องใช้ `127.0.0.1:3001` โดยตรง
+
+```powershell
+npm run setup
+npm run docker:check
+npm run docker:up
+```
+
+**ถ้า Ollama/MOSS บน Windows ฟังเฉพาะ `127.0.0.1`:** เปิด Docker Desktop
+host networking ก่อนแล้วใช้ `npm run docker:host` (โหมดแทนกัน ไม่รันคู่กับ
+`docker:up`) ไม่ต้องเปิด AI server สู่ LAN
+
+**สำคัญ:** ต้องเตรียม Live2D Core/shaders/renderer จาก SDK บนเครื่องก่อน Build
+ตาม [คู่มือ Live2D](docs/LIVE2D-R5.md) เพราะไฟล์เหล่านั้นไม่อยู่บน GitHub
+และการใช้ไมโครโฟนผ่านมือถือจะต้องมี HTTPS ที่เชื่อถือได้
+
+**ดูขั้นตอนและวิธีแก้ปัญหา:** [Docker + Mobile LAN](docs/DOCKER-MOBILE.md)
+
+
 โปรเจกต์เต็ม Phase 1 + 2 + 3: Windows Desktop Companion ด้วย Tauri 2
 
 **ใหม่: [คู่มือ LocalAI Multimodal — Chat + Vision + Voice](docs/LOCALAI-MULTIMODAL.md)** — ใช้ LocalAI แทน Ollama/FastAPI ได้แบบเลือกเปิด โดยยังคง Live2D, ความจำ และฐานข้อมูลเดิม
