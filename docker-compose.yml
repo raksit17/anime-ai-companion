@@ -1,3 +1,5 @@
+# Default: Docker bridge networking. For Windows services that listen only on
+# 127.0.0.1, use the host-network override documented in docs/DOCKER-MOBILE.md.
 services:
   postgres:
     image: postgres:17
@@ -13,6 +15,48 @@ services:
       interval: 5s
       timeout: 3s
       retries: 15
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./apps/api/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://anime:anime_dev_password@postgres:5432/anime_companion
+      # These names resolve to the Windows host from Docker Desktop containers.
+      # The AI providers must accept Docker-to-host traffic in bridge mode.
+      OLLAMA_URL: http://host.docker.internal:11434
+      LOCALAI_URL: http://host.docker.internal:8080
+      VOICE_SERVICE_URL: http://host.docker.internal:8000
+      VOICE_STUDIO_URL: http://host.docker.internal:8001
+      WEB_ORIGIN: http://localhost:5175,http://127.0.0.1:5175
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/v1/runtime/health',{headers:{Authorization:'Bearer '+process.env.LOCAL_API_TOKEN}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 8s
+      retries: 10
+      start_period: 35s
+    # Intentionally no published API port. Only the nginx web proxy can reach it.
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:5175:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
   localai:
     image: localai/localai:latest
     profiles: ["localai"]
@@ -21,6 +65,7 @@ services:
     volumes: ["localai_models:/models"]
     environment:
       MODELS_PATH: /models
+
   voice:
     build: ./apps/voice
     profiles: ["voice"]
@@ -30,6 +75,7 @@ services:
       STT_COMPUTE: int8
     volumes: ["voice_models:/root/.cache"]
     ports: ["127.0.0.1:8000:8000"]
+
 volumes:
   pgdata:
   voice_models:
