@@ -7,6 +7,7 @@ import {
   parseChatOutput,
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
+  parseDurationEdit,
   normalizePlannerActions,
   freeStartForAdd,
   explainExtendFollowUp,
@@ -736,4 +737,133 @@ test("preview-only chat never emits an applied-change receipt", async () => {
   assert.ok(reply.proposal);
   assert.equal(reply.message.appliedChanges, undefined);
   assert.equal((await p.get()).sessions.length, 0);
+});
+
+function durationEditFixture() {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "exercise", name: "ออกกำลังกาย", start: 480, duration: 30 },
+    { id: "cleaning", name: "ทำความสะอาดห้อง", start: 525, duration: 60 },
+    { id: "learning", name: "ฝึกโค้ดและภาษาอังกฤษ", start: 600, duration: 90 },
+    { id: "job", name: "หางาน", start: 705, duration: 60 },
+    { id: "project", name: "ปรับปรุง Anime AI Companion", start: 780, duration: 60 },
+  ].map((item) => ({
+    ...item,
+    date: future,
+    goalId: "daily:" + item.id,
+    status: "planned" as const,
+    fixed: false,
+    reminder: 10,
+  }));
+  return state;
+}
+
+test("resize existing cleaning 60 to 30, preserving its ID and shifting end from 09:45 to 09:15", () => {
+  const state = durationEditFixture();
+  const parsed = parseDurationEdit(state, future, "ทำความสะอาดห้อง ลด เหลือ 30 นาที");
+  assert.deepEqual(parsed?.command, { type: "resize", id: "cleaning", date: future, duration: 30 });
+  const changed = executeCommands(state, [parsed!.command!], future);
+  assert.equal(changed.sessions.length, 5);
+  assert.equal(changed.sessions.find((x) => x.id === "cleaning")?.start, 525);
+  assert.equal(changed.sessions.find((x) => x.id === "cleaning")?.duration, 30);
+  assert.equal(changed.sessions.reduce((n, x) => n + x.duration, 0), 270);
+  assert.equal(state.sessions.find((x) => x.id === "cleaning")?.duration, 60);
+});
+
+test("resize supports absolute increases and relative increments/decrements without new activities", () => {
+  let state = durationEditFixture();
+  const absolute = parseDurationEdit(state, future, "ทำความสะอาดห้อง เพิ่มเป็น 45 นาที")!.command!;
+  state.sessions = executeCommands(state, [absolute], future).sessions;
+  assert.equal(state.sessions[1].duration, 45);
+  const more = parseDurationEdit(state, future, "เพิ่มเวลาทำความสะอาดห้องอีก 15 นาที")!.command!;
+  assert.equal(more.duration, 60);
+  state.sessions = executeCommands(state, [more], future).sessions;
+  assert.equal(state.sessions[1].duration, 60);
+  const less = parseDurationEdit(state, future, "ลดเวลาทำความสะอาดห้องลง 30 นาที")!.command!;
+  assert.equal(less.duration, 30);
+  state.sessions = executeCommands(state, [less], future).sessions;
+  assert.equal(state.sessions[1].duration, 30);
+  assert.equal(state.sessions.length, 5);
+});
+
+test("resize rejects overlaps, fixed events, completed sessions and ambiguous duplicates", () => {
+  const state = durationEditFixture();
+  assert.throws(
+    () => executeCommands(state, [{ type: "resize", id: "cleaning", duration: 90, date: future }], future),
+    /ชนเวลา/,
+  );
+  assert.equal(state.sessions[1].duration, 60);
+  const duplicate = structuredClone(state);
+  duplicate.sessions.push({ ...state.sessions[1], id: "cleaning-2" });
+  const ambiguous = parseDurationEdit(duplicate, future, "ทำความสะอาดห้อง ลด เหลือ 30 นาที");
+  assert.match(ambiguous?.reason ?? "", /ซ้ำ/);
+  assert.equal(ambiguous?.command, undefined);
+  const fixed = structuredClone(state);
+  fixed.sessions[1].fixed = true;
+  assert.throws(
+    () => executeCommands(fixed, [{ type: "resize", id: "cleaning", duration: 30, date: future }], future),
+    /ล็อกเวลา/,
+  );
+  const done = structuredClone(state);
+  done.sessions[1].status = "done";
+  assert.throws(
+    () => executeCommands(done, [{ type: "resize", id: "cleaning", duration: 30, date: future }], future),
+    /บันทึกผล/,
+  );
+  assert.match(
+    parseDurationEdit(state, future, "ทำความสะอาดห้อง ลด เหลือ 0 นาที")?.reason ?? "",
+    /5–240/,
+  );
+});
+
+test("chat actually edits and persists task duration even when model would claim success without actions", async () => {
+  const { p, ai } = fixture(durationEditFixture());
+  ai.plannerCompletion = async () => { throw new Error("duration edits must not depend on model"); };
+  const request = {
+    ...dto,
+    requestId: "cleaning-resize-30",
+    message: "ทำความสะอาดห้อง ลด เหลือ 30 นาที",
+  };
+  const reply = await p.chat(request);
+  assert.equal(reply.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(reply.message.content, /จาก 60 นาที เหลือ 30 นาที/);
+  assert.deepEqual(reply.message.appliedChanges, [{
+    id: "cleaning",
+    date: future,
+    name: "ทำความสะอาดห้อง",
+    start: 525,
+    duration: 30,
+    status: "planned",
+    previousDuration: 60,
+    kind: "updated",
+  }]);
+  const state = await p.get();
+  assert.equal(state.sessions.find((x: any) => x.id === "cleaning").duration, 30);
+  assert.equal(state.sessions.reduce((n: number, x: any) => n + x.duration, 0), 270);
+  const retry = await p.chat(request);
+  assert.equal(retry.message.id, reply.message.id);
+  assert.equal((await p.get()).sessions.length, 5);
+});
+
+test("chat increase after reduction updates same session and rejects overlap without false success", async () => {
+  const initialState = durationEditFixture();
+  initialState.sessions[1].duration = 30;
+  const { p, ai } = fixture(initialState);
+  ai.plannerCompletion = async () => { throw new Error("model should not be needed"); };
+  const raise = await p.chat({
+    ...dto,
+    requestId: "cleaning-raise-45",
+    message: "ทำความสะอาดห้อง เพิ่มเป็น 45 นาที",
+  });
+  assert.equal(raise.message.appliedChanges?.[0]?.previousDuration, 30);
+  assert.equal(raise.message.appliedChanges?.[0]?.duration, 45);
+  const rejected = await p.chat({
+    ...dto,
+    requestId: "cleaning-raise-invalid",
+    message: "ทำความสะอาดห้อง เพิ่มเป็น 90 นาที",
+  });
+  assert.match(rejected.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal(rejected.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.find((x: any) => x.id === "cleaning").duration, 45);
 });
