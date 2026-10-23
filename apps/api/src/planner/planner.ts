@@ -26,6 +26,7 @@ import {
   parseConversationalDurationEdit,
   validateOllamaDurationEdit,
   parseTimeDurationEdit,
+  parseExerciseWithBreaks,
   parseScheduledAdd,
   completeScheduledAdd,
   simpleAddFromMessage,
@@ -521,7 +522,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         },
         dto.message,
       );
-      durationEdit = parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
+      durationEdit = parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
+        parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
       timedAdd = durationEdit ? undefined :

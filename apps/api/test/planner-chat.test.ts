@@ -13,6 +13,7 @@ import {
   parseConversationalDurationEdit,
   validateOllamaDurationEdit,
   parseTimeDurationEdit,
+  parseExerciseWithBreaks,
   normalizePlannerActions,
   freeStartForAdd,
   explainExtendFollowUp,
@@ -1397,4 +1398,95 @@ test("a Thai question does not authorize a model-initiated calendar edit", () =>
     [{ type: "resize", id: "job", date: tomorrow, duration: 30 }]);
   assert.equal(response?.command, undefined);
   assert.match(response?.reason ?? "", /คำถาม/);
+});
+
+function exerciseBetweenCleaningAndJob() {
+  const target = new Date(Date.parse(today()) + 86400000)
+    .toISOString().slice(0, 10);
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "clean", name: "ทำความสะอาดห้อง", start: 510, duration: 30 },
+    { id: "job", name: "หางาน", start: 600, duration: 30 },
+    { id: "exercise", name: "ออกกำลังกาย", start: 675, duration: 45 },
+    { id: "project", name: "ปรับปรุง Anime AI Companion", start: 825, duration: 60 },
+  ].map((entry) => ({
+    ...entry, date: target, goalId: "daily:" + entry.id,
+    status: "planned" as const, fixed: false, reminder: 10,
+  }));
+  return { state, target };
+}
+
+const exerciseNaturalRequest =
+  "พรุ่งนี้ช่วง 9 โมง อยากออกกำลังกายซักครึ่งชั่วโมง ช่วยจัดการเวลา ให้มีเวลาพักหลังทำความสะอาดห้องเสร็จ และเตรียมตัวหางาน";
+
+test("compound exercise request fits 09:15–09:45 between cleaning and job search with 15-minute breaks", () => {
+  const { state, target } = exerciseBetweenCleaningAndJob();
+  const parsed = parseExerciseWithBreaks(state, today(), exerciseNaturalRequest);
+  assert.deepEqual(parsed?.command, {
+    type: "edit", id: "exercise", date: target, start: 555, duration: 30,
+  });
+  // A compound reschedule is not a request to resize cleaning or job search.
+  assert.equal(validateOllamaDurationEdit(
+    state, today(), exerciseNaturalRequest, [
+      { type: "edit", id: "exercise", date: target, start: 555, duration: 30 },
+    ],
+  ), undefined);
+  const updated = executeCommands(state, [parsed!.command!], today());
+  assert.equal(updated.sessions.length, 4);
+  const exercise = updated.sessions.find((item) => item.id === "exercise");
+  assert.equal(exercise?.start, 555);
+  assert.equal(exercise?.duration, 30);
+  assert.equal(updated.sessions.find((item) => item.id === "clean")?.start, 510);
+  assert.equal(updated.sessions.find((item) => item.id === "job")?.start, 600);
+  assert.equal(updated.sessions.find((item) => item.id === "project")?.start, 825);
+  assert.equal(state.sessions.find((item) => item.id === "exercise")?.start, 675);
+});
+
+test("companion executes exercise+breaks plan without Ollama inventing a resize", async () => {
+  const { state, target } = exerciseBetweenCleaningAndJob();
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("clearly grounded compound request should bypass model");
+  };
+  const request = { ...dto, date: today(), requestId: "exercise-nine-with-breaks",
+    message: exerciseNaturalRequest };
+  const reply = await p.chat(request);
+  assert.equal(reply.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(reply.message.content, /09:15–09:45/);
+  assert.equal(reply.message.appliedChanges?.length, 1);
+  assert.deepEqual(reply.message.appliedChanges?.[0], {
+    id: "exercise", name: "ออกกำลังกาย", date: target, start: 555,
+    duration: 30, status: "planned", previousDuration: 45, kind: "updated",
+  });
+  const stored = await p.get();
+  assert.equal(stored.sessions.length, 4);
+  assert.equal(stored.sessions.find((item: any) => item.id === "exercise").start, 555);
+  assert.equal((await p.chat(request)).message.id, reply.message.id);
+});
+
+test("compound exercise request never changes a fixed or ambiguous workout", () => {
+  const { state, target } = exerciseBetweenCleaningAndJob();
+  const fixed = structuredClone(state);
+  fixed.sessions[2].fixed = true;
+  assert.match(parseExerciseWithBreaks(fixed, target, exerciseNaturalRequest)?.reason ?? "",
+    /ล็อก/);
+  const duplicate = structuredClone(state);
+  duplicate.sessions.push({ ...state.sessions[2], id: "exercise-duplicate" });
+  assert.match(parseExerciseWithBreaks(duplicate, target, exerciseNaturalRequest)?.reason ?? "",
+    /หลายรายการ/);
+  const constrained = structuredClone(state);
+  constrained.sessions[1].start = 570;
+  assert.match(parseExerciseWithBreaks(constrained, target, exerciseNaturalRequest)?.reason ?? "",
+    /ยังหาช่วง/);
+  assert.equal(constrained.sessions.length, 4);
+});
+
+test("plain duration reductions still use the existing conversational resize validator", () => {
+  const { state, target } = exerciseBetweenCleaningAndJob();
+  const edit = parseConversationalDurationEdit(
+    state, target, "หางาน พรุ่งนี้ ขอเพียง 20 นาที",
+  );
+  assert.equal(edit?.command?.type, "resize");
+  assert.equal(edit?.command?.duration, 20);
 });

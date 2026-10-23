@@ -196,6 +196,76 @@ export function simpleAddFromMessage(message: string, now = Date.now()): Command
 /** Parse a clear combined time+duration request into one atomic edit.
  * Time is local wall clock (minutes after midnight). Selected date applies
  * unless a relative/absolute date is specified. Never invent a task ID. */
+
+/** A compound, explicitly flexible request to put an existing exercise task
+ * somewhere within the named hour, while preserving the user's break setting.
+ * The model cannot silently reinterpret "half an hour" as a resize of another
+ * activity merely because the request also mentions cleaning or job search.
+ */
+export function parseExerciseWithBreaks(
+  state: State,
+  selected: string,
+  message: string,
+  now = Date.now(),
+): { command?: Command; reason?: string } | undefined {
+  if (!/(?:ออกกำลังกาย|ออกกำลัง)/u.test(message) ||
+      !/(?:ช่วยจัด|จัดการเวลา|เว้นพัก|มีเวลาพัก)/u.test(message) ||
+      !/(?:ครึ่ง\s*ชั่วโมง|30\s*นาที)/u.test(message))
+    return undefined;
+  const hour = message.match(/ช่วง\s*(?:(เช้า|บ่าย|เย็น)\s*)?(\d{1,2})\s*โมง/u);
+  if (!hour) return undefined;
+  if (/(?:ไหม|ดีไหม|\?)/u.test(message)) return undefined;
+  const hourNumber = Number(hour[2]);
+  const startHour = hour[1] === "บ่าย" && hourNumber <= 11
+    ? hourNumber + 12 : hourNumber;
+  if (!Number.isInteger(startHour) || startHour < 0 || startHour > 23)
+    return { reason: "ชั่วโมงที่ระบุไม่ถูกต้อง" };
+  const days = [...message.matchAll(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu)]
+    .map((m) => m[0].replace("พรุ้งนี้", "พรุ่งนี้"));
+  if (new Set(days).size > 1)
+    return { reason: "ระบุหลายวันในข้อความเดียว กรุณาเลือกหนึ่งวัน" };
+  const shift = days[0] === "วันนี้" ? 0 :
+    days[0] === "พรุ่งนี้" ? 1 :
+      days[0]?.startsWith("มะรืน") ? 2 : undefined;
+  const date = shift === undefined ? selected :
+    new Date(Date.parse(today(now)) + shift * 86400000)
+      .toISOString().slice(0, 10);
+  const tasks = state.sessions.filter(
+    (session) => session.date === date &&
+      /^(?:ออกกำลัง|ออกกำลังกาย)$/u.test(session.name.trim()),
+  );
+  if (tasks.length !== 1)
+    return { reason: tasks.length === 0
+      ? "ไม่พบสล็อตออกกำลังกายในวันที่ " + date +
+        " กรุณาบอกว่าจะเพิ่มกิจกรรมใหม่หรือเลือกวันอื่น"
+      : "พบสล็อตออกกำลังกายหลายรายการในวันที่ " + date +
+        " กรุณาเลือกรายการที่ต้องการจัดใหม่" };
+  const task = tasks[0];
+  if (task.fixed || task.status !== "planned" ||
+      timestamp(task.date, task.start) < now)
+    return { reason: "สล็อตออกกำลังกายนี้ถูกล็อกหรือเริ่มไปแล้ว จึงยังปรับไม่ได้" };
+
+  // "ช่วง 9 โมง" denotes an hour window, not an exact 09:00 mandate.
+  // Search quarter-hour starts only *inside* that hour. fits() enforces rest
+  // both after the preceding task and before the following one.
+  const desiredDuration = 30;
+  const startBoundary = startHour * 60;
+  const candidates = Array.from({ length: 4 }, (_, i) => startBoundary + i * 15);
+  const found = candidates.find((start) => fits(
+    state,
+    { ...task, date, start, duration: desiredDuration, status: "planned" },
+    now,
+  ));
+  if (found === undefined)
+    return { reason: "ยังหาช่วงออกกำลังกาย 30 นาทีภายใน " +
+      formatMinutes(startBoundary) + "–" + formatMinutes(startBoundary + 60) +
+      " ที่เว้นพัก " + Math.max(15, state.settings.breakMinutes) +
+      " นาทีก่อนและหลังงานอื่นไม่ได้ จึงยังไม่เปลี่ยนตาราง" };
+  return { command: {
+    type: "edit", id: task.id, date, start: found, duration: desiredDuration,
+  } };
+}
+
 export function parseTimeDurationEdit(
   state: State,
   selected: string,
@@ -314,7 +384,7 @@ export function validateOllamaDurationEdit(
   commands: Command[],
   now = Date.now(),
 ): { command?: Command; reason?: string } | undefined {
-  if (!/(?:ลด|ย่อ|สั้นลง|เหลือ|เพิ่มเวลา|ขอแค่|ขอเพียง|เอาแค่|ครึ่ง)/u.test(message) ||
+  if (!/(?:ลด|ย่อ|สั้นลง|เหลือ|เพิ่มเวลา|ขอแค่|ขอเพียง|เอาแค่|ลดอีก|เพิ่มอีก)/u.test(message) ||
       !/(?:นาที|ชั่วโมง|ชม\.?|ครึ่งหนึ่ง)/u.test(message)) return undefined;
   if (/(?:ไหม|หรือเปล่า|\?)/u.test(message))
     return { reason: "นี่เป็นคำถามเกี่ยวกับการปรับเวลา ฉันยังไม่เปลี่ยนตารางนะคะ" };
@@ -782,6 +852,12 @@ export function executeCommands(
       };
       if (!fits(locked, edited, now))
         throw new Error("เวลาที่ขอชนกิจกรรมล็อกไว้ เวลาพัก เวลานอน หรือเพดานรายวัน");
+      // If the requested slot already fits the full schedule, retain every
+      // other activity and apply the targeted edit without adaptive reflow.
+      if (fits(state, edited, now)) {
+        Object.assign(s, edited);
+        continue;
+      }
       Object.assign(s, edited, { fixed: true });
       const reflow = adapt(state, date, "normal", undefined, now, 1);
       const anchored = reflow.sessions.find((x) => x.id === s.id);
