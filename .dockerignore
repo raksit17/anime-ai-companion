@@ -29,3 +29,12 @@ storage/
 README*
 docs/
 .github/
+
+# Keep the monorepo Docker build context small.
+apps/api/.agents/
+apps/api/.claude/
+apps/api/.windsurf/
+apps/api/test/
+apps/web/test/
+apps/web/src-tauri/
+apps/voice/
