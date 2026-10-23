@@ -3,6 +3,7 @@ import { useAnimation } from "./animation";
 import { ref } from "vue";
 import { io } from "socket.io-client";
 import { api, base } from "../api";
+import { generateRequestId } from "../services/request-id";
 import type {
   Character,
   Conversation,
@@ -205,7 +206,7 @@ export const useChat = defineStore("chat", () => {
       if (!conversation.value) await newConversation();
       if (!conversation.value) throw new Error("กรุณาเลือกตัวละครก่อน");
       waitSignal?.throwIfAborted();
-      requestId = crypto.randomUUID();
+      requestId = generateRequestId();
       busy.value = true;
       partial.value = "";
       error.value = "";

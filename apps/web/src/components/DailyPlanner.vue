@@ -8,6 +8,7 @@ import {
   onBeforeUnmount,
 } from "vue";
 import { api } from "../api";
+import { generateRequestId } from "../services/request-id";
 import { useChat } from "../stores/chat";
 import PlannerAdvanced from "./PlannerAdvanced.vue";
 type Session = {
@@ -161,7 +162,7 @@ async function send(text = input.value) {
   busy.value = true;
   error.value = "";
   const characterId = companion.character.id,
-    requestId = crypto.randomUUID();
+    requestId = generateRequestId();
   const pending: Message = {
     id: requestId,
     role: "user",
