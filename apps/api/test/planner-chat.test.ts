@@ -5,6 +5,7 @@ import {
   executeCommands,
   explainPlannerConstraint,
   parseChatOutput,
+  previewDailyCapacityIncrease,
   plannerMessages,
 } from "../src/planner/chat-engine";
 import { initial } from "../src/planner/engine";
@@ -361,4 +362,164 @@ test("conflict description reports the actual sleep boundary instead of a generi
   assert.match(detail.reason, /22:00–23:00/);
   assert.match(detail.reason, /เข้านอน 22:00/);
   assert.equal(detail.followUps.find((x) => x.openSettings)?.label, "ตั้งค่าเวลานอน");
+});
+
+function fullWorkday() {
+  const state = initial();
+  state.sessions.push(
+    {
+      id: "work-1",
+      goalId: "daily:work-1",
+      name: "Exercise",
+      date: future,
+      start: 480,
+      duration: 120,
+      status: "planned",
+      fixed: false,
+      reminder: 10,
+    },
+    {
+      id: "work-2",
+      goalId: "daily:work-2",
+      name: "Coding",
+      date: future,
+      start: 615,
+      duration: 120,
+      status: "planned",
+      fixed: false,
+      reminder: 10,
+    },
+  );
+  return state;
+}
+
+test("capacity preview is only available if it alone can make a new flexible task fit", () => {
+  const full = fullWorkday();
+  const command = {
+    type: "add" as const,
+    name: "Improve Anime AI Companion",
+    date: future,
+    start: 780,
+    duration: 60,
+    fixed: false,
+  };
+  assert.throws(() => executeCommands(full, [command], future));
+  const p = previewDailyCapacityIncrease(full, [command], future);
+  assert.equal(p?.previousLimit, 240);
+  assert.equal(p?.proposedLimit, 300);
+  assert.equal(p?.sessions.length, 3);
+  assert.equal(p?.sessions[2].start, 780);
+  assert.equal(full.sessions.length, 2);
+  assert.equal(full.capacityOverrides?.[future], undefined);
+  // No proposal if another constraint is still violated.
+  assert.equal(
+    previewDailyCapacityIncrease(
+      full,
+      [{ ...command, fixed: true, start: 1380 }],
+      future,
+    ),
+    undefined,
+  );
+  assert.equal(
+    previewDailyCapacityIncrease(full, [command, command], future),
+    undefined,
+  );
+  assert.equal(
+    previewDailyCapacityIncrease(
+      { ...full, settings: { ...full.settings, maxMinutes: 700 } },
+      [{ ...command, duration: 240 }],
+      future,
+    ),
+    undefined,
+  );
+});
+
+test("chat proposes raising only tomorrow's capacity and adding work together; autoApply never bypasses approval", async () => {
+  const { p, ai } = fixture(fullWorkday());
+  let calls = 0;
+  ai.plannerCompletion = async () => {
+    if (++calls === 1)
+      return JSON.stringify({
+        reply: "จัดเพิ่มให้นะคะ",
+        actions: [
+          {
+            type: "add",
+            name: "Improve Anime AI Companion",
+            duration: 60,
+            start: 780,
+            date: future,
+            fixed: false,
+          },
+        ],
+      });
+    return JSON.stringify({
+      reply: "ถ้าอยากเพิ่มอีกหนึ่งชั่วโมง กดอนุมัติแผนเฉพาะวันพรุ่งนี้ได้เลยนะคะ",
+      actions: [],
+    });
+  };
+  const request = {
+    ...dto,
+    requestId: "capacity-one-day",
+    date: future,
+    message: "พรุ่งนี้ เพิ่มปรับปรุง anime ai companion อีกหนึ่งชั่วโมง",
+    autoApply: true,
+  };
+  const response = await p.chat(request);
+  assert.equal(calls, 2);
+  assert.match(response.message.outcome, /รอยืนยัน/);
+  assert.equal(response.proposal.capacityOverride.date, future);
+  assert.equal(response.proposal.capacityOverride.maxMinutes, 300);
+  assert.equal((await p.get()).sessions.length, 2);
+  assert.equal((await p.get()).capacityOverrides?.[future], undefined);
+  const duplicate = await p.chat(request);
+  assert.equal(duplicate.message.id, response.message.id);
+  assert.equal(duplicate.proposal.id, response.proposal.id);
+  assert.equal(calls, 2);
+  await p.confirm(response.proposal.id);
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 3);
+  assert.equal(saved.capacityOverrides?.[future], 300);
+  assert.equal(saved.settings.maxMinutes, 240);
+  assert.equal(saved.capacityOverrides?.["2030-04-01"], undefined);
+  assert.equal(saved.sessions[2].name, "Improve Anime AI Companion");
+});
+
+test("one-day capacity change does not leak into later days", () => {
+  const state = fullWorkday();
+  state.capacityOverrides = { [future]: 300 };
+  const tomorrowPlusOne = new Date(Date.parse(future) + 86400000)
+    .toISOString()
+    .slice(0, 10);
+  const limit = state.settings.maxMinutes;
+  assert.equal(state.capacityOverrides[future], 300);
+  assert.equal(state.capacityOverrides[tomorrowPlusOne], undefined);
+  assert.equal(limit, 240);
+});
+
+test("stale one-day approval is rejected without applying work or changing capacity", async () => {
+  const { p, ai } = fixture(fullWorkday());
+  ai.plannerCompletion = async () =>
+    JSON.stringify({
+      reply: "เตรียมไว้ให้เลือกค่ะ",
+      actions: [
+        { type: "add", name: "Project", duration: 60, start: 780, date: future },
+      ],
+    });
+  const preview = await p.chat({
+    ...dto,
+    requestId: "capacity-stale",
+    message: "พรุ่งนี้เพิ่ม Project 1 ชั่วโมง",
+  });
+  const pending = preview.proposal.id;
+  assert.ok(pending);
+  await p.settings({
+    wake: 480,
+    sleep: 1320,
+    breakMinutes: 15,
+    maxMinutes: 240,
+  });
+  await assert.rejects(() => p.confirm(pending));
+  const state = await p.get();
+  assert.equal(state.sessions.length, 2);
+  assert.equal(state.capacityOverrides?.[future], undefined);
 });
