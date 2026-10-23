@@ -62,7 +62,8 @@ const date = ref(today()),
   messages = ref<Message[]>([]),
   sessions = ref<Session[]>([]),
   capacityOverrides = ref<Record<string, number>>({}),
-  highlightedSession = ref("");
+  highlightedSession = ref(""),
+  deletingSession = ref<Session | null>(null);
 const input = ref(""),
   error = ref(""),
   busy = ref(false),
@@ -291,6 +292,23 @@ function chooseFollowUp(option: PlannerFollowUp) {
     void send(option.prompt);
   }
 }
+async function removeSession(session: Session) {
+  if (busy.value || deletingSession.value?.id !== session.id) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    await api(`/planner/sessions/${encodeURIComponent(session.id)}`, "DELETE");
+    // Don't accidentally confirm any proposal generated from an old schedule.
+    proposal.value = undefined;
+    highlightedSession.value = "";
+    deletingSession.value = null;
+    await refresh();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
 async function mark(s: Session, status: string) {
   if (busy.value) return;
   error.value = "";
@@ -505,6 +523,23 @@ watch(advanced, (value) => {
                 ><button :disabled="busy" @click="mark(s, 'skipped')">
                   ข้าม
                 </button>
+              </div>
+              <div v-if="s.status !== 'done'" class="session-delete-tools">
+                <button
+                  v-if="deletingSession?.id !== s.id"
+                  class="delete-slot-trigger"
+                  type="button"
+                  :disabled="busy"
+                  :aria-label="`ลบกิจกรรม ${s.name} วันที่ ${s.date} ${clock(s.start)}`"
+                  @click="deletingSession = s"
+                >ลบสล็อต</button>
+                <div v-else class="delete-slot-confirm" role="group" :aria-label="`ยืนยันลบ ${s.name}`">
+                  <span>ลบเฉพาะ {{ s.name }} · {{ s.date }} {{ clock(s.start) }} ใช่ไหม?</span>
+                  <button type="button" :disabled="busy" class="delete-slot-danger" @click="removeSession(s)">
+                    ยืนยันลบ
+                  </button>
+                  <button type="button" :disabled="busy" @click="deletingSession = null">ยกเลิก</button>
+                </div>
               </div>
               <small v-if="s.status === 'deferred'"
                 >ยังไม่จองเวลา · บอกยูนะว่าต้องการย้ายไปวันไหน</small
@@ -885,6 +920,35 @@ watch(advanced, (value) => {
 .task-actions button {
   font-size: 11px;
   padding: 6px 9px;
+}
+.session-delete-tools {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.session-delete-tools button {
+  font-size: 11px;
+  padding: 6px 9px;
+}
+.delete-slot-trigger {
+  color: #9a4b42;
+  background: transparent;
+  border: 1px solid #e6d6d1;
+}
+.delete-slot-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid #e6d6d1;
+  border-radius: 8px;
+  color: #80534d;
+  background: #fff8f6;
+}
+.delete-slot-danger {
+  color: #fff;
+  background: #a85146;
+  border-color: #a85146;
 }
 .done .task {
   opacity: 0.65;

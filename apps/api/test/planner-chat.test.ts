@@ -14,7 +14,7 @@ import {
   explainExtendFollowUp,
   plannerMessages,
 } from "../src/planner/chat-engine";
-import { initial, today } from "../src/planner/engine";
+import { initial, today, plan } from "../src/planner/engine";
 const require = createRequire(import.meta.url);
 const { PlannerService } = require("../dist/planner/planner.js");
 const now = Date.parse("2030-01-07T00:00:00+07:00"),
@@ -969,4 +969,108 @@ test("chat verified receipt uses exact requested start and duration, never stale
   assert.equal(state.sessions.length, 5);
   assert.equal((await p.chat(request)).message.id, reply.message.id);
   assert.equal((await p.get()).sessions.length, 5);
+});
+
+function removableSlotState() {
+  const state = initial();
+  const goal = {
+    id: "recurring-exercise",
+    name: "ออกกำลัง",
+    duration: 30,
+    days: [0, 1, 2, 3, 4, 5, 6],
+    preferred: 540,
+    priority: 2,
+    restDays: 0,
+    reminder: 10,
+    flexible: true,
+  };
+  state.goals.push(goal);
+  state.sessions.push(
+    {
+      id: "obsolete-skipped",
+      goalId: goal.id,
+      name: goal.name,
+      date: future,
+      start: 525,
+      duration: 30,
+      status: "skipped",
+      fixed: false,
+      reminder: 10,
+    },
+    {
+      id: "real-exercise",
+      name: "ออกกำลังกาย",
+      date: future,
+      start: 540,
+      duration: 45,
+      status: "planned",
+      fixed: false,
+      reminder: 10,
+    },
+    {
+      id: "completed-work",
+      name: "งานที่ทำแล้ว",
+      date: future,
+      start: 720,
+      duration: 30,
+      status: "done",
+      fixed: false,
+      reminder: 10,
+    },
+  );
+  return state;
+}
+
+test("delete one skipped calendar slot by ID, not other tasks or recurring goal", async () => {
+  const { p } = fixture(removableSlotState());
+  const result = await p.removeSession("obsolete-skipped");
+  assert.deepEqual(result, {
+    ok: true,
+    removed: { id: "obsolete-skipped", date: future, name: "ออกกำลัง" },
+  });
+  const after = await p.get();
+  assert.equal(after.sessions.length, 2);
+  assert.deepEqual(after.sessions.map((s: any) => s.id),
+    ["real-exercise", "completed-work"]);
+  assert.equal(after.goals.length, 1);
+  assert.deepEqual(after.suppressedOccurrences?.["recurring-exercise"], [future]);
+  assert.equal(after.revision, 1);
+});
+
+test("deleted recurring occurrence is not recreated by plan() on the same day", async () => {
+  const { p } = fixture(removableSlotState());
+  await p.removeSession("obsolete-skipped");
+  const saved = await p.get();
+  const result = plan(saved, future, "normal");
+  assert.equal(result.state.sessions.some((x: any) =>
+    x.goalId === "recurring-exercise" && x.date === future), false);
+  const nextDate = new Date(Date.parse(future) + 86400000).toISOString().slice(0, 10);
+  assert.equal(result.state.sessions.some((x: any) =>
+    x.goalId === "recurring-exercise" && x.date === nextDate), true);
+});
+
+test("delete slot invalidates a pending proposal and does not modify chat history", async () => {
+  const { p } = fixture(removableSlotState());
+  const pending = await p.propose({ date: future, energy: "normal" });
+  await p.removeSession("obsolete-skipped");
+  await assert.rejects(() => p.confirm(pending.id));
+  assert.equal((await p.history("yuna")).length, 0);
+});
+
+test("delete rejects completed slots and unknown IDs without any state change", async () => {
+  const { p } = fixture(removableSlotState());
+  await assert.rejects(() => p.removeSession("completed-work"), /กิจกรรมที่ทำเสร็จแล้ว/);
+  await assert.rejects(() => p.removeSession("not-found"), /ไม่พบกิจกรรม/);
+  const state = await p.get();
+  assert.equal(state.sessions.length, 3);
+  assert.equal(state.revision, 0);
+  assert.deepEqual(state.suppressedOccurrences, {});
+});
+
+test("repeated deletion cannot remove an unrelated slot", async () => {
+  const { p } = fixture(removableSlotState());
+  await p.removeSession("obsolete-skipped");
+  await assert.rejects(() => p.removeSession("obsolete-skipped"));
+  assert.deepEqual((await p.get()).sessions.map((s: any) => s.id),
+    ["real-exercise", "completed-work"]);
 });
