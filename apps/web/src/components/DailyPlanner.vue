@@ -25,6 +25,15 @@ type PlannerFollowUp = {
   prompt?: string;
   openSettings?: boolean;
 };
+type AppliedChange = {
+  id: string;
+  date: string;
+  name: string;
+  start: number;
+  duration: number;
+  status: string;
+  kind: "created" | "updated";
+};
 type Message = {
   id: string;
   role: string;
@@ -32,6 +41,7 @@ type Message = {
   createdAt: string;
   outcome?: string;
   followUps?: PlannerFollowUp[];
+  appliedChanges?: AppliedChange[];
 };
 type Proposal = {
   id: string;
@@ -50,7 +60,8 @@ const date = ref(today()),
   month = ref(today().slice(0, 7)),
   messages = ref<Message[]>([]),
   sessions = ref<Session[]>([]),
-  capacityOverrides = ref<Record<string, number>>({});
+  capacityOverrides = ref<Record<string, number>>({}),
+  highlightedSession = ref("");
 const input = ref(""),
   error = ref(""),
   busy = ref(false),
@@ -134,6 +145,7 @@ const label = (s: string) =>
     s
   ] ?? s;
 function select(d: string) {
+  highlightedSession.value = "";
   date.value = d;
   month.value = d.slice(0, 7);
 }
@@ -191,6 +203,8 @@ async function send(text = input.value) {
   };
   messages.value.push(pending);
   input.value = "";
+  const before = new Map(sessions.value.map((s) => [s.id, s]));
+  let replyReceived = false;
   try {
     const result = await api<{ message: Message; proposal?: Proposal }>(
       "/planner/chat",
@@ -204,16 +218,66 @@ async function send(text = input.value) {
       },
       135000,
     );
+    replyReceived = true;
     if (companion.character?.id === characterId) {
       messages.value.push(result.message);
       proposal.value = result.proposal;
     }
     await refresh();
+    if (companion.character?.id !== characterId) return;
+    if (result.message.outcome?.startsWith("บันทึกตารางแล้ว")) {
+      // The server receipt takes precedence. Fall back to comparing snapshots
+      // for older backends so a stale deployed API cannot quietly claim success.
+      const reported = result.message.appliedChanges;
+      const actualChanges = sessions.value
+        .filter((next) => {
+          const old = before.get(next.id);
+          return !old ||
+            old.date !== next.date ||
+            old.start !== next.start ||
+            old.duration !== next.duration ||
+            old.name !== next.name ||
+            old.status !== next.status;
+        })
+        .map((x): AppliedChange => ({
+          ...x,
+          kind: before.has(x.id) ? "updated" : "created",
+        }));
+      const changed = reported ?? actualChanges;
+      const confirmed = changed.filter((c) =>
+        sessions.value.some((x) =>
+          x.id === c.id &&
+          x.date === c.date &&
+          x.start === c.start &&
+          x.duration === c.duration &&
+          x.name === c.name &&
+          x.status === c.status,
+        ),
+      );
+      if (!changed.length || confirmed.length !== changed.length) {
+        error.value =
+          "แชตแจ้งว่าบันทึกแล้ว แต่ยังยืนยันรายการที่เปลี่ยนจากตารางไม่ได้ กรุณาตรวจสอบวันที่ในปฏิทินและอัปเดต API/Web ให้เป็นเวอร์ชันล่าสุด ก่อนส่งคำสั่งซ้ำ";
+        result.message.outcome = "ยังยืนยันการแสดงผลในตารางไม่ได้";
+      } else {
+        // Select the actual saved date rather than the selected chat date:
+        // "พรุ่งนี้" can point to a different calendar day.
+        const focus = confirmed.find((c) => c.kind === "created") ?? confirmed[0];
+        select(focus.date);
+        highlightedSession.value = focus.id;
+        if (!reported) result.message.appliedChanges = confirmed;
+        await nextTick();
+        document.getElementById(`planner-session-${focus.id}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
   } catch (e) {
-    error.value = String(e);
-    input.value = text;
-    messages.value = messages.value.filter((m) => m.id !== requestId);
-    await refresh().catch(() => {});
+    error.value = replyReceived
+      ? `เซิร์ฟเวอร์ตอบกลับแล้ว แต่โหลด/ตรวจสอบตารางไม่สำเร็จ: ${String(e)} โปรดรีเฟรชก่อนส่งซ้ำ`
+      : String(e);
+    if (!replyReceived) {
+      input.value = text;
+      messages.value = messages.value.filter((m) => m.id !== requestId);
+    }
   } finally {
     busy.value = false;
   }
@@ -411,7 +475,12 @@ watch(advanced, (value) => {
           </button>
         </div>
         <ol class="timeline">
-          <li v-for="(s, i) in daySessions" :key="s.id" :class="s.status">
+          <li
+            v-for="(s, i) in daySessions"
+            :id="`planner-session-${s.id}`"
+            :key="s.id"
+            :class="[s.status, { 'just-applied': highlightedSession === s.id }]"
+          >
             <div class="time">
               <strong>{{ clock(s.start) }}</strong
               ><small>{{ clock(s.start + s.duration) }}</small>
@@ -480,6 +549,12 @@ watch(advanced, (value) => {
             }}</small>
             <div class="planner-bubble">{{ m.content }}</div>
             <div v-if="m.outcome" class="action-receipt">{{ m.outcome }}</div>
+            <div v-if="m.appliedChanges?.length" class="planner-saved-items">
+              <p v-for="c in m.appliedChanges" :key="c.id">
+                {{ c.kind === "created" ? "เพิ่ม" : "อัปเดต" }}
+                {{ c.name }} · {{ c.date }} {{ clock(c.start) }}–{{ clock(c.start + c.duration) }}
+              </p>
+            </div>
             <div v-if="m.followUps?.length" class="planner-followups">
               <button
                 v-for="option in m.followUps"
@@ -773,6 +848,11 @@ watch(advanced, (value) => {
   border-radius: 10px;
   background: white;
 }
+.just-applied .task {
+  border-color: #6c8f56;
+  border-left-color: #507c41;
+  background: #f4f9ef;
+}
 .task-title {
   display: flex;
   gap: 8px;
@@ -894,6 +974,15 @@ watch(advanced, (value) => {
   color: #77836b;
   line-height: 1.6;
   margin-top: 6px;
+}
+.planner-saved-items {
+  font-size: 11px;
+  line-height: 1.65;
+  color: #5b7450;
+  margin-top: 6px;
+}
+.planner-saved-items p {
+  margin: 4px 0;
 }
 .planner-followups {
   display: flex;
