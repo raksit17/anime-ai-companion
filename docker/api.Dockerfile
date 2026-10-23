@@ -13,7 +13,12 @@ RUN npm ci --no-audit --no-fund
 
 COPY apps/api/ apps/api/
 COPY packages/contracts/ packages/contracts/
-RUN npm run generate -w apps/api && npm run build -w apps/api
+# Prisma 7 loads prisma.config.ts during prisma generate and requires a URL,
+# even though client generation never connects to the database.
+# Use a non-secret, unreachable placeholder for this build step only.
+# The actual DATABASE_URL is supplied by Docker Compose at container runtime.
+RUN DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build npm run generate -w apps/api \
+    && npm run build -w apps/api
 
 FROM node:22-bookworm-slim
 ENV NODE_ENV=production
