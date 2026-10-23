@@ -8,6 +8,7 @@ import {
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
   parseDurationEdit,
+  parseTimeDurationEdit,
   normalizePlannerActions,
   freeStartForAdd,
   explainExtendFollowUp,
@@ -866,4 +867,106 @@ test("chat increase after reduction updates same session and rejects overlap wit
   assert.match(rejected.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
   assert.equal(rejected.message.appliedChanges, undefined);
   assert.equal((await p.get()).sessions.find((x: any) => x.id === "cleaning").duration, 45);
+});
+
+function exactEditDay() {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "exercise", name: "ออกกำลัง", start: 525, duration: 30 },
+    { id: "cleaning", name: "ทำความสะอาดห้อง", start: 600, duration: 30 },
+    { id: "coding", name: "ฝึกโค้ดและภาษาอังกฤษ", start: 645, duration: 90 },
+    { id: "job", name: "หางาน", start: 750, duration: 60 },
+    { id: "project", name: "ปรับปรุง Anime AI Companion", start: 825, duration: 60 },
+  ].map((item) => ({
+    ...item,
+    date: future,
+    goalId: "daily:" + item.id,
+    fixed: false,
+    status: "planned" as const,
+    reminder: 10,
+  }));
+  return state;
+}
+
+test("exact exercise 09:00 for 45 minutes updates both values atomically", () => {
+  const state = exactEditDay();
+  const edit = parseTimeDurationEdit(state, future,
+    "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที");
+  assert.deepEqual(edit?.command, {
+    type: "edit", id: "exercise", date: future, start: 540, duration: 45,
+  });
+  const result = executeCommands(state, [edit!.command!], future);
+  assert.equal(result.sessions.length, 5);
+  assert.equal(result.sessions.find((x) => x.id === "exercise")?.start, 540);
+  assert.equal(result.sessions.find((x) => x.id === "exercise")?.duration, 45);
+  assert.equal(result.sessions.find((x) => x.id === "cleaning")?.start, 600);
+  assert.equal(result.sessions.reduce((sum, x) => sum + x.duration, 0), 285);
+  assert.equal(state.sessions.find((x) => x.id === "exercise")?.start, 525);
+  assert.equal(state.sessions.find((x) => x.id === "exercise")?.duration, 30);
+});
+
+test("combined edits resolve tomorrow or common typo without overriding another day", () => {
+  const next = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const state = exactEditDay();
+  for (const s of state.sessions) s.date = next;
+  const result = parseTimeDurationEdit(state, today(),
+    "พรุ้งนี้ ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที");
+  assert.equal(result?.command?.date, next);
+  assert.equal(result?.command?.duration, 45);
+  assert.equal(
+    parseTimeDurationEdit(state, today(),
+      "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที")?.reason?.includes("ไม่พบ"),
+    true,
+  );
+});
+
+test("fixed collision rejects exact combined edit rather than shifting requested time", () => {
+  const state = exactEditDay();
+  state.sessions.push({
+    id: "appointment", date: future, name: "นัดสำคัญ",
+    start: 540, duration: 30, status: "planned",
+    fixed: true, reminder: 10,
+  });
+  assert.throws(() => executeCommands(state, [{
+    type: "edit", id: "exercise", date: future, start: 540, duration: 45,
+  }], future), /ชนกิจกรรมล็อก/);
+  assert.equal(state.sessions.find((x) => x.id === "exercise")?.start, 525);
+  assert.equal(state.sessions.find((x) => x.id === "exercise")?.duration, 30);
+});
+
+test("duplicate activity names require a unique target for combined edits", () => {
+  const state = exactEditDay();
+  state.sessions.push({ ...state.sessions[0], id: "exercise-2" });
+  const parsed = parseTimeDurationEdit(state, future,
+    "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที");
+  assert.match(parsed?.reason ?? "", /หลายกิจกรรม/);
+  assert.equal(parsed?.command, undefined);
+});
+
+test("chat verified receipt uses exact requested start and duration, never stale model prose", async () => {
+  const { p, ai } = fixture(exactEditDay());
+  ai.plannerCompletion = async () => {
+    throw new Error("the local model must not decide an explicit time edit");
+  };
+  const request = {
+    ...dto,
+    requestId: "combined-exercise-09-45",
+    message: "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที",
+  };
+  const reply = await p.chat(request);
+  assert.equal(reply.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(reply.message.content, /09:00–09:45/);
+  const applied = reply.message.appliedChanges;
+  assert.deepEqual(applied, [{
+    id: "exercise", name: "ออกกำลัง", date: future, start: 540,
+    duration: 45, status: "planned", previousDuration: 30, kind: "updated",
+  }]);
+  const state = await p.get();
+  const session = state.sessions.find((x: any) => x.id === "exercise");
+  assert.equal(session?.start, 540);
+  assert.equal(session?.duration, 45);
+  assert.equal(state.sessions.length, 5);
+  assert.equal((await p.chat(request)).message.id, reply.message.id);
+  assert.equal((await p.get()).sessions.length, 5);
 });
