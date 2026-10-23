@@ -22,6 +22,7 @@ import {
   explainPlannerConstraint,
   parseChatOutput,
   normalizePlannerActions,
+  simpleAddFromMessage,
   plannerConflictFallback,
   previewDailyCapacityIncrease,
   plannerMessages,
@@ -634,6 +635,24 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
         if (result) {
+          // The action is backed by the validated schedule, not a possibly
+          // hallucinatory time in the model's conversational reply.
+          const exactRequest = simpleAddFromMessage(dto.message);
+          if (exactRequest) {
+            const added = result.sessions.find(
+              (next) =>
+                next.date === exactRequest.date &&
+                next.name === exactRequest.name &&
+                !s.sessions.some((old) => old.id === next.id),
+            );
+            if (added) {
+              const clock = (minutes: number) =>
+                `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+              output.reply = dto.autoApply
+                ? `ได้เลยค่ะ ฉันเพิ่ม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ให้แล้วนะ`
+                : `ฉันเตรียม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ไว้ให้ตรวจแล้วค่ะ ยังไม่ได้บันทึกจนกว่าเธอจะยืนยันนะ`;
+            }
+          }
           if (dto.autoApply) {
             s.sessions = result.sessions;
             this.changed(s);
