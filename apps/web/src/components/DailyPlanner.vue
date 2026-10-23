@@ -22,8 +22,33 @@ type Goal = {
   reminder: number;
   flexible: boolean;
 };
-type Proposal = { id: string; sessions: Session[]; unscheduled: string[] };
+type Proposal = {
+  id: string;
+  sessions: Session[];
+  unscheduled: string[];
+  reasons?: string[];
+  breakMinutes?: number;
+};
+type Weekly = {
+  from: string;
+  to: string;
+  total: number;
+  done: number;
+  recommendations: string[];
+  goals: {
+    id: string;
+    name: string;
+    total: number;
+    done: number;
+    missed: number;
+    skipped: number;
+    deferred: number;
+    rate: number;
+  }[];
+};
 const data = ref<{
+  weekly: Weekly;
+  weeklyReport?: { text: string; generatedAt: string };
   goals: Goal[];
   sessions: Session[];
   settings: {
@@ -79,7 +104,12 @@ const preview = computed(
       .filter(
         (s) =>
           !data.value?.sessions.some(
-            (x) => x.id === s.id && x.date === s.date && x.start === s.start,
+            (x) =>
+              x.id === s.id &&
+              x.date === s.date &&
+              x.start === s.start &&
+              x.duration === s.duration &&
+              x.status === s.status,
           ),
       )
       .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start) ?? [],
@@ -121,6 +151,10 @@ function edit(g: Goal) {
 async function poll() {
   try {
     reminders.value = await api("/planner/reminders");
+    if (data.value && !data.value.weeklyReport) {
+      const latest = await api("/planner");
+      data.value.weeklyReport = latest.weeklyReport;
+    }
   } catch {
     /* Main load/actions display connection errors; retry reminders next tick. */
   }
@@ -170,7 +204,7 @@ async function checkNotifications() {
 </script>
 <template>
   <section class="planner">
-    <h2>Daily Life Planner</h2>
+    <h2>Adaptive Life Planner</h2>
     <p class="muted">
       เวลาไทย (Asia/Bangkok) · เป้าหมายร่วมของผู้ใช้ทุกตัวละคร
     </p>
@@ -195,6 +229,48 @@ async function checkNotifications() {
       แจ้งเตือนเมื่อ API และหน้าต่างแอปเปิดอยู่ ตรวจทุก 30 วินาที
     </p>
     <fieldset :disabled="busy">
+      <details open v-if="data?.weekly" class="weekly">
+        <summary>
+          ทบทวนสัปดาห์ก่อน {{ data.weekly.from }} – {{ data.weekly.to }}
+        </summary>
+        <p v-if="!data.weekly.total">
+          ยังไม่มีข้อมูลสัปดาห์ก่อน ระบบจะเริ่มวิเคราะห์เมื่อมีประวัติ
+        </p>
+        <template v-else>
+          <p>สำเร็จ {{ data.weekly.done }} / {{ data.weekly.total }} กิจกรรม</p>
+          <p v-for="g in data.weekly.goals" :key="g.id">
+            {{ g.name }}: {{ Math.round(g.rate * 100) }}% · ข้าม
+            {{ g.skipped }} · ยังไม่บันทึกผล {{ g.missed }} · พักไว้
+            {{ g.deferred }}
+          </p>
+          <p v-for="r in data.weekly.recommendations" :key="r">{{ r }}</p>
+          <button
+            @click="
+              run(async () => {
+                await api('/planner/weekly-review', 'POST', {}, 135000);
+                await load();
+              })
+            "
+          >
+            อ่านผลวิเคราะห์ AI รายสัปดาห์
+          </button>
+          <p class="advice" v-if="data.weeklyReport">
+            {{ data.weeklyReport.text }}
+          </p>
+          <small v-if="data.weeklyReport"
+            >วิเคราะห์เมื่อ
+            {{
+              new Date(data.weeklyReport.generatedAt).toLocaleString("th-TH", {
+                timeZone: "Asia/Bangkok",
+              })
+            }}</small
+          >
+          <p class="muted small">
+            API วิเคราะห์อัตโนมัติสัปดาห์ละครั้งเมื่อเปิดอยู่ รายงานเป็นภาพรวม ณ
+            เวลาวิเคราะห์ ไม่มีการเปลี่ยนตารางจนกดยืนยัน
+          </p>
+        </template>
+      </details>
       <label>วันที่ <input type="date" v-model="date" required /></label>
       <label
         >พลังงาน
@@ -216,16 +292,44 @@ async function checkNotifications() {
       >
         เสนอแผน 7 วัน
       </button>
+      <button
+        @click="
+          run(async () => {
+            proposal = await api('/planner/adaptive', 'POST', { date, energy });
+          })
+        "
+      >
+        ปรับตารางเดิมตามความคืบหน้า
+      </button>
+      <p class="muted small">
+        ปรับกิจกรรมยืดหยุ่นใน 7 วันที่เลือก รักษานัดคงที่และวันพัก
+        ไม่สะสมงานเก่าที่พลาด
+      </p>
       <p class="muted small">
         เติมกิจกรรมที่ยังไม่มี ไม่ย้ายตารางเดิม และไม่สะสมงานที่ข้ามไปวันถัดไป
       </p>
       <div v-if="proposal" class="planner-card">
         <h3>ตัวอย่างก่อนบันทึก</h3>
-        <p v-if="!preview.length">ไม่มีกิจกรรมใหม่</p>
-        <p v-for="s in preview" :key="s.id">
-          {{ s.date }} {{ clock(s.start) }}–{{ clock(s.start + s.duration) }}
-          {{ s.name }}
+        <p v-if="proposal.breakMinutes">
+          เว้นพักอย่างน้อย {{ proposal.breakMinutes }} นาที
         </p>
+        <p v-for="reason in proposal.reasons" :key="reason">{{ reason }}</p>
+        <p v-if="!preview.length">ไม่มีกิจกรรมใหม่</p>
+        <div v-for="s in preview" :key="s.id" class="planner-card">
+          <small v-if="data?.sessions.find((x) => x.id === s.id)"
+            >เดิม: {{ data.sessions.find((x) => x.id === s.id)!.date }}
+            {{ clock(data.sessions.find((x) => x.id === s.id)!.start) }} ·
+            {{ data.sessions.find((x) => x.id === s.id)!.duration }} นาที</small
+          >
+          <p>
+            {{ s.name }} →
+            {{
+              s.status === "deferred"
+                ? "พักไว้ (ยังไม่ได้จัดเวลา)"
+                : `${s.date} ${clock(s.start)}–${clock(s.start + s.duration)}`
+            }}
+          </p>
+        </div>
         <p v-for="u in proposal.unscheduled" :key="u" class="muted">{{ u }}</p>
         <button
           class="primary"
@@ -258,7 +362,9 @@ async function checkNotifications() {
               ? "สำเร็จ"
               : s.status === "skipped"
                 ? "ข้าม"
-                : "รอทำ"
+                : s.status === "deferred"
+                  ? "พักไว้"
+                  : "รอทำ"
           }}
         </p>
         <p v-if="s.note">{{ s.note }}</p>
@@ -375,11 +481,11 @@ async function checkNotifications() {
         <form
           @submit.prevent="
             run(async () => {
-              await api('/planner/events', 'POST', {
+              proposal = await api('/planner/events/proposal', 'POST', {
                 ...event,
                 start: minutes(eventTime),
               });
-              proposal = undefined;
+
               event.name = '';
               await load();
             })
@@ -400,7 +506,7 @@ async function checkNotifications() {
               min="5"
               max="720"
               required /></label
-          ><button>บันทึกนัด</button>
+          ><button>เสนอแผนพร้อมนัดใหม่</button>
         </form>
       </details>
       <details v-if="data">

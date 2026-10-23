@@ -154,13 +154,14 @@ cloud account or Redis service is required.
   flexibility, reminder lead time, and rest days between sessions.
 - Set the waking window, breaks, and daily goal-minute budget. This first version
   explicitly uses **Asia/Bangkok (UTC+7)** and a same-day waking window.
-- Add locked appointments (including meals) before generating a plan. Conflicting
-  appointments are rejected; move a flexible session or skip it first.
+- Add locked appointments (including meals) through a combined appointment and
+  replanning preview. Conflicts with flexible future work are resolved where
+  possible; collisions with fixed/started activities are rejected.
 - Preview seven days and confirm to save. The deterministic scheduler respects
   existing sessions, rest days, breaks, sleep, priority, and daily capacity.
   Unscheduled work is reported, never silently piled onto tomorrow.
-- Low energy shortens **new** sessions to at most 20 minutes. Existing sessions
-  remain intact. Move an existing flexible session through a separate preview.
+- In the initial seven-day generator, low energy shortens **new** sessions to
+  at most 20 minutes. The Adaptive button also adjusts existing flexible sessions.
 - Mark sessions done/skipped and record notes (exercise sets/reps/weight, English
   topics, coding progress). Cumulative completed minutes and counts are shown.
 - Ask the local AI for advice using the actual goals, schedule, and progress.
@@ -184,7 +185,48 @@ settings (`PATCH`), proposals (`POST`, `POST/:id/confirm`), events (`POST`),
 sessions (`PATCH/:id`, `POST/:id/move`), reminders (`GET`, `POST/:id/ack`),
 and advice (`POST`). DTO validation rejects unknown fields and out-of-range values.
 
-Current boundaries: no Google Calendar sync, BullMQ/background daemon, automatic
-weekly goal changes, exercise prescription, or dedicated English/coding lesson
-engine. The existing companion chat remains available for practice. Tests cover
+Current boundaries: no Google Calendar sync, BullMQ/OS notification daemon,
+exercise prescription, or dedicated English/coding lesson engine. Adaptive
+weekly review and confirmed replanning are described below. The existing companion chat remains available for practice. Tests cover
 scheduling constraints and proposal/commit/status behavior (`npm test`).
+
+
+### Version 2 — Adaptive Life Planner
+
+- The weekly card summarizes the **last completed Monday–Sunday week in Bangkok**.
+  It separates completed, skipped, unlogged past, and deferred sessions. Fixed
+  appointments without a goal are excluded from habit completion statistics.
+- When the API is running, it checks for a missing weekly AI report, beginning
+  about one minute after startup, then at most hourly. Reports are stored in the
+  existing planner row and generated once per week, only when past goal sessions
+  exist. Concurrent requests within the process share one inference. Failures
+  retry the next hour; `PLANNER_AUTO_REVIEW=false` disables automatic inference.
+  The report button can request the missing report immediately. Reports are
+  snapshots with generation timestamps; later check-ins update the statistics,
+  not the already generated prose. AI never commits schedule changes.
+- **ปรับตารางเดิมตามความคืบหน้า** previews the selected seven-day window. A goal
+  with at least three sessions last week and less than 60% completion receives a
+  proposed 25% duration reduction (minimum ten minutes). Low energy caps existing
+  flexible work at twenty minutes. These are transparent scheduling heuristics,
+  not medical judgments. Goal definitions and past records remain unchanged.
+- Adding an appointment now proposes both the appointment and reflow of future
+  flexible sessions. Started/completed activities and fixed events are retained.
+  Reflow tries the original time/date first, then free quarter-hour slots and
+  later allowed goal weekdays within the selected seven-day window. Higher
+  priority goals are placed first, with existing daily budgets and recovery days.
+- Adaptive placement reserves at least 15 minutes between activities (or the
+  user's larger configured break), without silently changing global settings.
+  Old fixed activities are not rearranged. No work is carried forward from past
+  missed sessions. Work that cannot fit remains visible with `deferred` status,
+  separate from skipped, and can be reconsidered by another adaptive preview
+  before its original start time. No session is silently deleted.
+- The preview includes before/after times, reduced durations, reasons and work
+  left unplaced. Confirming commits the appointment and all changes atomically;
+  stale or expired proposals cannot overwrite newer progress. Cancel leaves the
+  saved schedule intact. Repeated adaptations do not compound duration reductions.
+
+New API routes: `POST /v1/planner/adaptive` (`date`, `energy`),
+`POST /v1/planner/events/proposal` (same fields as events), and
+`POST /v1/planner/weekly-review`. No additional migration is required beyond the
+initial `PlannerStore` migration. The API/model must be running for automated
+analysis; it catches up after restart rather than waking a powered-off computer.

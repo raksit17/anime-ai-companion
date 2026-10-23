@@ -73,3 +73,65 @@ test("status transitions cannot be double counted", async () => {
   await assert.rejects(() => p.progress(x.id, { status: "done" }));
   assert.equal((await p.get()).progress.minutes, 60);
 });
+
+test("adaptive event commits appointment and moved work together, with stale protection", async () => {
+  const p = fixture();
+  await p.goal(goal);
+  await p.confirm((await p.propose({ date, energy: "normal" })).id);
+  const before = await p.get();
+  const draft = await p.adaptiveEvent({
+    name: "Interview",
+    date,
+    start: 600,
+    duration: 60,
+  });
+  assert.deepEqual((await p.get()).sessions, before.sessions);
+  await p.confirm(draft.id);
+  const after = await p.get();
+  assert.equal(
+    after.sessions.filter((x: any) => x.name === "Interview").length,
+    1,
+  );
+  assert.notEqual(
+    after.sessions.find((x: any) => x.id === before.sessions[0].id).start,
+    600,
+  );
+  const stale = await p.adaptive({ date, energy: "low" });
+  await p.goal({ ...goal, name: "Reading" });
+  await assert.rejects(() => p.confirm(stale.id));
+});
+test("weekly report is cached and concurrent AI requests share one generation", async () => {
+  const p = fixture();
+  const week = (await p.get()).weekly;
+  let calls = 0;
+  await p.access((s: any) => {
+    s.sessions.push({
+      id: "past",
+      goalId: "g",
+      name: "Coding",
+      date: week.from,
+      start: 600,
+      duration: 60,
+      status: "done",
+      fixed: false,
+      reminder: 10,
+    });
+  }, true);
+  p.advice = async () => {
+    calls++;
+    await new Promise((r) => setTimeout(r, 5));
+    return { text: "Try a lighter schedule" };
+  };
+  const [a, b] = await Promise.all([p.weeklyAnalysis(), p.weeklyAnalysis()]);
+  assert.deepEqual(a, b);
+  await p.weeklyAnalysis();
+  assert.equal(calls, 1);
+  assert.equal((await p.get()).weeklyReport.text, "Try a lighter schedule");
+});
+test("empty week does not request AI", async () => {
+  const p = fixture();
+  p.advice = () => {
+    throw new Error("must not run");
+  };
+  assert.match((await p.weeklyAnalysis()).text, /ยังไม่มี/);
+});

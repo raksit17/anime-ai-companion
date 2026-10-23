@@ -9,10 +9,13 @@ import {
   Injectable,
   Module,
   NotFoundException,
+  OnModuleInit,
+  OnModuleDestroy,
   Param,
   Patch,
   Post,
 } from "@nestjs/common";
+import { adapt, weeklyReview } from "./adaptive";
 import { randomUUID } from "node:crypto";
 import { Database } from "../database";
 import { ResourceGate } from "../resources";
@@ -38,15 +41,36 @@ import {
   validDate,
 } from "./engine";
 type Proposal = {
+  reasons?: string[];
+  breakMinutes?: number;
   id: string;
   revision: number;
   expires: number;
   sessions: Session[];
   unscheduled: string[];
 };
-type Stored = State & { proposal?: Proposal };
+type Stored = State & {
+  proposal?: Proposal;
+  weeklyReport?: { weekKey: string; text: string; generatedAt: string };
+};
 @Injectable()
-export class PlannerService {
+export class PlannerService implements OnModuleInit, OnModuleDestroy {
+  private reviewTimer?: ReturnType<typeof setInterval>;
+  private reviewing?: Promise<unknown>;
+  private nextReviewAttempt = 0;
+  onModuleInit() {
+    if (process.env.PLANNER_AUTO_REVIEW === "false") return;
+    this.reviewTimer = setInterval(() => {
+      if (Date.now() < this.nextReviewAttempt) return;
+      this.nextReviewAttempt = Date.now() + 3600000;
+      void this.weeklyAnalysis().catch(() => undefined);
+    }, 60000);
+    this.reviewTimer.unref();
+  }
+  onModuleDestroy() {
+    clearInterval(this.reviewTimer);
+  }
+
   constructor(
     @Inject(Database) private db: Database,
     @Inject(OllamaService) private ai: OllamaService,
@@ -83,6 +107,11 @@ export class PlannerService {
     return this.access((s) => ({
       ...s,
       proposal: undefined,
+      weekly: weeklyReview(s),
+      weeklyReport:
+        s.weeklyReport?.weekKey === weeklyReview(s).weekKey
+          ? s.weeklyReport
+          : undefined,
       progress: {
         done: s.sessions.filter((x) => x.status === "done").length,
         skipped: s.sessions.filter((x) => x.status === "skipped").length,
@@ -108,7 +137,9 @@ export class PlannerService {
       if (!s.goals.some((g) => g.id === id)) throw new NotFoundException();
       s.goals = s.goals.filter((g) => g.id !== id);
       s.sessions = s.sessions.filter(
-        (x) => x.goalId !== id || x.status !== "planned",
+        (x) =>
+          x.goalId !== id ||
+          (x.status !== "planned" && x.status !== "deferred"),
       );
       this.changed(s);
       return { ok: true };
@@ -167,7 +198,7 @@ export class PlannerService {
           (x) =>
             x.id !== id &&
             x.goalId === goal.id &&
-            x.status !== "skipped" &&
+            (x.status === "planned" || x.status === "done") &&
             Math.abs(Date.parse(x.date) - Date.parse(dto.date)) / 86400000 <=
               goal.restDays,
         )
@@ -202,10 +233,19 @@ export class PlannerService {
         (x) =>
           !s.sessions.some(
             (old) =>
-              old.id === x.id && old.date === x.date && old.start === x.start,
+              old.id === x.id &&
+              old.date === x.date &&
+              old.start === x.start &&
+              old.duration === x.duration &&
+              old.status === x.status,
           ),
       );
-      if (changed.some((x) => timestamp(x.date, x.start) < Date.now()))
+      if (
+        changed.some(
+          (x) =>
+            x.status === "planned" && timestamp(x.date, x.start) < Date.now(),
+        )
+      )
         throw new ConflictException("เวลาเริ่มผ่านไปแล้ว กรุณาสร้างแผนใหม่");
       s.sessions = p.sessions;
       this.changed(s);
@@ -262,6 +302,72 @@ export class PlannerService {
       return { ok: true };
     }, true);
   }
+  adaptive(dto: PlanDto) {
+    this.date(dto.date);
+    return this.access((s) => {
+      const result = adapt(s, dto.date, dto.energy);
+      const p = {
+        ...result,
+        id: randomUUID(),
+        revision: s.revision,
+        expires: Date.now() + 900000,
+      };
+      s.proposal = p;
+      return p;
+    }, true);
+  }
+  adaptiveEvent(dto: EventDto) {
+    this.date(dto.date);
+    return this.access((s) => {
+      let result;
+      try {
+        result = adapt(s, dto.date, "normal", dto);
+      } catch (e) {
+        throw new ConflictException((e as Error).message);
+      }
+      const p = {
+        ...result,
+        id: randomUUID(),
+        revision: s.revision,
+        expires: Date.now() + 900000,
+      };
+      s.proposal = p;
+      return p;
+    }, true);
+  }
+  weeklyAnalysis() {
+    if (this.reviewing) return this.reviewing;
+    this.reviewing = this.createWeeklyAnalysis().finally(() => {
+      this.reviewing = undefined;
+    });
+    return this.reviewing;
+  }
+  private async createWeeklyAnalysis() {
+    const state = await this.get();
+    if (state.weeklyReport?.weekKey === state.weekly.weekKey)
+      return state.weeklyReport;
+    if (!state.weekly.total)
+      return {
+        text: "ยังไม่มีประวัติกิจกรรมในสัปดาห์ก่อน",
+        weekKey: state.weekly.weekKey,
+      };
+    const result = await this.advice({
+      message:
+        "ทบทวนเฉพาะสัปดาห์ที่จบแล้วตาม weeklyReview: อัตราสำเร็จ งานข้าม งานยังไม่บันทึกผล และเวลาพัก เสนอปรับภาระอย่างพอดี ห้ามวินิจฉัยสุขภาพ ห้ามกล่าวว่ามีการเปลี่ยนตารางแล้ว",
+    });
+    return this.access((s) => {
+      if (s.revision !== state.revision)
+        throw new ConflictException(
+          "ข้อมูลเปลี่ยนระหว่างวิเคราะห์ กรุณาลองใหม่",
+        );
+      s.weeklyReport = {
+        weekKey: state.weekly.weekKey,
+        text: result.text,
+        generatedAt: new Date().toISOString(),
+      };
+      return s.weeklyReport;
+    }, true);
+  }
   async advice(dto: AdviceDto) {
     const state = await this.get();
     const signal = AbortSignal.timeout(120000);
@@ -286,6 +392,7 @@ export class PlannerService {
                 .filter((x) => x.date >= today())
                 .slice(0, 100),
               progress: state.progress,
+              weeklyReview: state.weekly,
             }),
           },
         ],
@@ -303,6 +410,15 @@ class PlannerController {
   constructor(@Inject(PlannerService) private planner: PlannerService) {}
   @Get() get() {
     return this.planner.get();
+  }
+  @Post("adaptive") adaptive(@Body() d: PlanDto) {
+    return this.planner.adaptive(d);
+  }
+  @Post("events/proposal") adaptiveEvent(@Body() d: EventDto) {
+    return this.planner.adaptiveEvent(d);
+  }
+  @Post("weekly-review") weeklyReview() {
+    return this.planner.weeklyAnalysis();
   }
   @Post("goals") goal(@Body() d: GoalDto) {
     return this.planner.goal(d);

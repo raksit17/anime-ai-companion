@@ -17,7 +17,7 @@ export type Session = {
   date: string;
   start: number;
   duration: number;
-  status: "planned" | "done" | "skipped";
+  status: "planned" | "done" | "skipped" | "deferred";
   fixed: boolean;
   reminder: number;
   notified?: boolean;
@@ -57,7 +57,9 @@ export function fits(state: State, session: Session, now: number) {
   const { wake, sleep, breakMinutes, maxMinutes } = state.settings;
   const others = state.sessions.filter(
     (s) =>
-      s.id !== session.id && s.date === session.date && s.status !== "skipped",
+      s.id !== session.id &&
+      s.date === session.date &&
+      (s.status === "planned" || s.status === "done"),
   );
   return (
     session.start >= wake &&
@@ -99,7 +101,7 @@ export function plan(
         state.sessions.some(
           (s) =>
             s.goalId === goal.id &&
-            s.status !== "skipped" &&
+            (s.status === "planned" || s.status === "done") &&
             Math.abs(Date.parse(s.date) - Date.parse(date)) / 86400000 <=
               goal.restDays,
         )
