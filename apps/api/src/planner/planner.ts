@@ -18,9 +18,14 @@ import {
 } from "@nestjs/common";
 import {
   executeCommands,
+  explainPlannerConstraint,
   parseChatOutput,
+  plannerConflictFallback,
   plannerMessages,
   plannerChatSchema,
+  type ChatOutput,
+  type PlannerConstraint,
+  type PlannerFollowUp,
 } from "./chat-engine";
 import { adapt, weeklyReview } from "./adaptive";
 import { randomUUID } from "node:crypto";
@@ -65,6 +70,7 @@ type PlannerMessage = {
   requestId?: string;
   outcome?: string;
   proposalId?: string;
+  followUps?: PlannerFollowUp[];
 };
 type Stored = State & {
   chats?: Record<string, PlannerMessage[]>;
@@ -416,7 +422,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     });
     const signal = AbortSignal.timeout(120000),
       release = await this.gate.acquire(signal);
-    let output;
+    let output: ChatOutput;
+    let blocked: PlannerConstraint | undefined;
     try {
       const relevant = snapshot.sessions.filter(
         (s) =>
@@ -430,28 +437,70 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         throw new BadRequestException(
           "ตารางช่วงนี้มีมากเกินไป กรุณาจัดการกิจกรรมก่อน",
         );
-      output = parseChatOutput(
-        await this.ai.plannerCompletion(
-          plannerMessages(
-            character,
-            memories,
-            history,
-            {
-              selectedDate: dto.date,
-              today: today(),
-              now: new Date().toISOString(),
-              timezone: "Asia/Bangkok",
-              settings: snapshot.settings,
-              goals: snapshot.goals,
-              sessions: relevant,
-              weekly: weeklyReview(snapshot),
-            },
-            dto.message,
-          ),
-          plannerChatSchema,
-          signal,
-        ),
+      const messages = plannerMessages(
+        character,
+        memories,
+        history,
+        {
+          selectedDate: dto.date,
+          today: today(),
+          now: new Date().toISOString(),
+          timezone: "Asia/Bangkok",
+          settings: snapshot.settings,
+          goals: snapshot.goals,
+          sessions: relevant,
+          weekly: weeklyReview(snapshot),
+        },
+        dto.message,
       );
+      output = parseChatOutput(
+        await this.ai.plannerCompletion(messages, plannerChatSchema, signal),
+      );
+      // Validate on the snapshot before entering the write transaction.
+      // If constraints reject a suggested change, let the companion explain
+      // the conflict rather than surfacing a 400 or losing the conversation.
+      if (output.actions.length) {
+        try {
+          executeCommands(snapshot, output.actions, dto.date);
+        } catch (e) {
+          blocked = explainPlannerConstraint(
+            snapshot,
+            output.actions,
+            (e as Error).message,
+          );
+          let reply = plannerConflictFallback(character.name, blocked);
+          try {
+            const recovered = parseChatOutput(
+              await this.ai.plannerCompletion(
+                [
+                  ...messages,
+                  { role: "assistant", content: JSON.stringify(output) },
+                  {
+                    role: "system",
+                    content:
+                      "Trusted planner validation REJECTED the previous actions. No changes were saved. Speak as the same character in Thai. Briefly explain the validation reason, then ask the user to choose an alternative. Do not claim any schedule or settings changed, and do not change the user's requested time on your own. Return exactly JSON with a natural reply and actions: []. The user must explicitly change sleeping hours in settings.",
+                  },
+                  {
+                    role: "user",
+                    content: JSON.stringify({
+                      validationReason: blocked.reason,
+                      availableChoices: blocked.followUps,
+                      instruction: "Explain the conflict and ask which option I want.",
+                    }),
+                  },
+                ],
+                plannerChatSchema,
+                signal,
+              ),
+            );
+            if (recovered.actions.length === 0) reply = recovered.reply;
+          } catch {
+            // Failed recovery generation must not turn a normal conflict
+            // into an HTTP error or apply the rejected action.
+          }
+          output = { reply, actions: [] };
+        }
+      }
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     } finally {
@@ -465,33 +514,47 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       if (s.revision !== snapshot.revision)
         throw new ConflictException("ตารางเปลี่ยนระหว่างคุย กรุณาส่งใหม่");
       const createdAt = new Date().toISOString();
-      let outcome = "คำตอบจาก " + character.name,
+      let outcome = blocked
+          ? "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason
+          : "คำตอบจาก " + character.name,
         proposal: Proposal | undefined;
       if (output.actions.length) {
-        let result;
+        let result: ReturnType<typeof executeCommands> | undefined;
         try {
           result = executeCommands(s, output.actions, dto.date);
         } catch (e) {
-          throw new BadRequestException(
-            `${(e as Error).message} — ยังไม่ได้เปลี่ยนตาราง`,
+          // A clock-boundary conflict can occur after snapshot validation
+          // without a revision change. Still return a useful chat reply.
+          blocked = explainPlannerConstraint(
+            s,
+            output.actions,
+            (e as Error).message,
           );
-        }
-        if (dto.autoApply) {
-          s.sessions = result.sessions;
-          this.changed(s);
-          outcome = "บันทึกตารางแล้ว";
-        } else {
-          proposal = {
-            id: randomUUID(),
-            revision: s.revision,
-            expires: Date.now() + 900000,
-            sessions: result.sessions,
-            unscheduled: result.notices,
+          output = {
+            reply: plannerConflictFallback(character.name, blocked),
+            actions: [],
           };
-          s.proposal = proposal;
-          outcome = "รอยืนยันแผน ยังไม่ได้บันทึก";
+          outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
-        if (result.notices.length) outcome += "\n" + result.notices.join("\n");
+        if (result) {
+          if (dto.autoApply) {
+            s.sessions = result.sessions;
+            this.changed(s);
+            outcome = "บันทึกตารางแล้ว";
+          } else {
+            proposal = {
+              id: randomUUID(),
+              revision: s.revision,
+              expires: Date.now() + 900000,
+              sessions: result.sessions,
+              unscheduled: result.notices,
+            };
+            s.proposal = proposal;
+            outcome = "รอยืนยันแผน ยังไม่ได้บันทึก";
+          }
+          if (result.notices.length)
+            outcome += "\n" + result.notices.join("\n");
+        }
       }
       const message: PlannerMessage = {
         id: randomUUID(),
@@ -501,6 +564,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         requestId: dto.requestId,
         outcome,
         proposalId: proposal?.id,
+        followUps: blocked?.followUps,
       };
       s.chats ??= {};
       s.chats[dto.characterId] = [
