@@ -1378,3 +1378,23 @@ test("Ollama output validator enforces a grounded target, duration and date", ()
     [{ ...command, duration: 45 }],
   )?.reason ?? "", /ไม่ตรง/);
 });
+
+test("multiple mentioned durations choose the requested final total rather than the old one", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const edit = parseConversationalDurationEdit(state, tomorrow,
+    "พรุ่งนี้งานหางาน เดิม 60 นาที ขอเพียง 30 นาทีพอ");
+  assert.equal(edit?.command?.duration, 30);
+  const llm = validateOllamaDurationEdit(state, tomorrow,
+    "พรุ่งนี้อยากให้เวลาหางานจาก 60 นาทีเหลือ 30 นาที",
+    [{ type: "resize", id: "job", date: tomorrow, duration: 30 }]);
+  assert.equal(llm?.command?.duration, 30);
+});
+
+test("a Thai question does not authorize a model-initiated calendar edit", () => {
+  const { state, tomorrow } = tomorrowWorkday();
+  const response = validateOllamaDurationEdit(state, tomorrow,
+    "ลดเวลาหางานเหลือ 30 นาทีได้ไหม?",
+    [{ type: "resize", id: "job", date: tomorrow, duration: 30 }]);
+  assert.equal(response?.command, undefined);
+  assert.match(response?.reason ?? "", /คำถาม/);
+});
