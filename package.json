@@ -19,7 +19,10 @@
     "test": "npm run test -w apps/api && npm run test -w apps/web",
     "desktop:dev": "npm run tauri:dev -w apps/web",
     "desktop:build": "npm run tauri:build -w apps/web",
-    "live2d:setup": "node scripts/setup-live2d-r5.mjs"
+    "live2d:setup": "node scripts/setup-live2d-r5.mjs",
+    "docker:check": "node scripts/check-docker-assets.mjs",
+    "docker:up": "npm run docker:check && docker compose up -d --build postgres api web",
+    "docker:host": "npm run docker:check && docker compose -f docker-compose.yml -f docker-compose.host-network.yml up -d --build postgres api web"
   },
   "devDependencies": {
     "concurrently": "^9.2.0",
