@@ -14,6 +14,7 @@ import Live2DViewer from "./components/Live2DViewer.vue";
 import type { Character } from "@companion/contracts";
 import { assistantDisplayText } from "./services/speech-segments";
 const voice = useVoice();
+const mobileStage = ref(false);
 const animation = useAnimation();
 const live2d = ref<{ applyAction: (action: { expression?: string; motion?: string }) => Promise<void> }>();
 voice.setActionHandler((action) => live2d.value?.applyAction(action) ?? Promise.resolve());
@@ -301,7 +302,7 @@ async function deleteCharacter() {
           </button>
         </div>
       </aside>
-      <main class="character-stage">
+      <main class="character-stage" :class="{ 'mobile-stage-open': mobileStage }">
         <div class="stage-heading">
           <span class="pill">{{ emoji[chat.emotion] }} {{ chat.emotion }}</span
           ><button
@@ -344,6 +345,11 @@ async function deleteCharacter() {
       </main>
       <section class="chat-panel">
         <nav>
+          <button class="mobile-companion-toggle" type="button"
+            :aria-pressed="mobileStage"
+            @click="mobileStage = !mobileStage">
+            {{ mobileStage ? "ซ่อนยูนะ" : "ดูยูนะ" }}
+          </button>
           <button :class="{ active: tab === 'planner' }" @click="tab = 'planner'">แผนชีวิต</button>
           <button :class="{ active: tab === 'chat' }" @click="tab = 'chat'">
             บทสนทนา</button
