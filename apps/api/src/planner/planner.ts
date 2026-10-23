@@ -78,6 +78,15 @@ type PlannerMessage = {
   outcome?: string;
   proposalId?: string;
   followUps?: PlannerFollowUp[];
+  appliedChanges?: Array<{
+    id: string;
+    date: string;
+    name: string;
+    start: number;
+    duration: number;
+    status: Session["status"];
+    kind: "created" | "updated";
+  }>;
 };
 type Stored = State & {
   chats?: Record<string, PlannerMessage[]>;
@@ -596,7 +605,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       let outcome = blocked
           ? "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason
           : "คำตอบจาก " + character.name,
-        proposal: Proposal | undefined;
+        proposal: Proposal | undefined,
+        appliedChanges: PlannerMessage["appliedChanges"];
       if (capacityPreview) {
         // Even with autoApply enabled, increasing daily workload requires
         // the user's separate approval through the existing proposal flow.
@@ -635,6 +645,30 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
         if (result) {
+          // A verified change receipt is generated from actual persisted-state
+          // differences, never from the model's claimed actions or prose.
+          const oldById = new Map(s.sessions.map((item) => [item.id, item]));
+          const changedItems = result.sessions
+            .filter((next) => {
+              const old = oldById.get(next.id);
+              return !old ||
+                old.date !== next.date ||
+                old.start !== next.start ||
+                old.duration !== next.duration ||
+                old.name !== next.name ||
+                old.status !== next.status ||
+                old.fixed !== next.fixed;
+            })
+            .map((next) => ({
+              id: next.id,
+              date: next.date,
+              name: next.name,
+              start: next.start,
+              duration: next.duration,
+              status: next.status,
+              kind: (oldById.has(next.id) ? "updated" : "created") as
+                "created" | "updated",
+            }));
           // The action is backed by the validated schedule, not a possibly
           // hallucinatory time in the model's conversational reply.
           const exactRequest = simpleAddFromMessage(dto.message);
@@ -654,9 +688,15 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             }
           }
           if (dto.autoApply) {
-            s.sessions = result.sessions;
-            this.changed(s);
-            outcome = "บันทึกตารางแล้ว";
+            if (changedItems.length) {
+              s.sessions = result.sessions;
+              this.changed(s);
+              appliedChanges = changedItems;
+              outcome = "บันทึกตารางแล้ว";
+            } else {
+              output.reply = "ฉันตรวจคำสั่งแล้ว แต่ไม่มีรายการในตารางเปลี่ยนแปลงนะคะ";
+              outcome = "ไม่มีการเปลี่ยนแปลงตาราง";
+            }
           } else {
             proposal = {
               id: randomUUID(),
@@ -681,6 +721,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         outcome,
         proposalId: proposal?.id,
         followUps: blocked?.followUps,
+        appliedChanges,
       };
       s.chats ??= {};
       s.chats[dto.characterId] = [
