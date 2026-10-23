@@ -23,6 +23,7 @@ import {
   parseChatOutput,
   normalizePlannerActions,
   parseDurationEdit,
+  parseTimeDurationEdit,
   simpleAddFromMessage,
   plannerConflictFallback,
   previewDailyCapacityIncrease,
@@ -489,7 +490,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         },
         dto.message,
       );
-      durationEdit = parseDurationEdit(snapshot, dto.date, dto.message);
+      durationEdit = parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
+        parseDurationEdit(snapshot, dto.date, dto.message);
       const guided = durationEdit ? undefined : explainExtendFollowUp(
         snapshot, history, dto.message,
       );
@@ -691,6 +693,17 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               kind: (oldById.has(next.id) ? "updated" : "created") as
                 "created" | "updated",
             }));
+          const editedCommand = output.actions.find((a) => a.type === "edit");
+          const editedItem = editedCommand
+            ? changedItems.find((x) => x.id === editedCommand.id)
+            : undefined;
+          if (editedCommand && editedItem) {
+            const fmt = (minutes: number) =>
+              `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+            output.reply = dto.autoApply
+              ? `เรียบร้อยค่ะ ฉันตั้ง ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) ตามที่ขอแล้วนะ งานอื่นที่จำเป็นต้องขยับก็จัดให้เว้นพักตามกฎค่ะ`
+              : `ฉันเตรียมแผน ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) แล้วค่ะ รอเธอยืนยันก่อนนะ`;
+          }
           // Show the new duration only after the validator returned a
           // real changed session, never merely because the model said "done".
           const resized = output.actions.find((a) => a.type === "resize");
