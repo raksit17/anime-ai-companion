@@ -23,6 +23,8 @@ import {
   parseChatOutput,
   normalizePlannerActions,
   parseDurationEdit,
+  parseConversationalDurationEdit,
+  validateOllamaDurationEdit,
   parseTimeDurationEdit,
   parseScheduledAdd,
   completeScheduledAdd,
@@ -520,7 +522,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         dto.message,
       );
       durationEdit = parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
-        parseDurationEdit(snapshot, dto.date, dto.message);
+        parseDurationEdit(snapshot, dto.date, dto.message) ??
+        parseConversationalDurationEdit(snapshot, dto.date, dto.message);
       timedAdd = durationEdit ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
@@ -590,10 +593,61 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       output = {
         ...output,
         actions: normalizePlannerActions(output.actions, dto.message),
-        // If a concrete, fully dated natural-language add is recognized,
-        // the deterministic action is authoritative over a model refusal.
         reply: output.reply,
       };
+      // Natural language is interpreted by the existing Ollama/local model
+      // when the deterministic parser cannot understand it. Its interpretation
+      // is *never* a trusted database mutation: resolve the target ID, date
+      // and numeric duration against the original user's text before applying.
+      let semantic = validateOllamaDurationEdit(
+        snapshot, dto.date, dto.message, output.actions,
+      );
+      if (semantic && !semantic.command) {
+        // A dedicated second pass can recover a missed resize intent, using
+        // the same configured provider/model (no new model to install).
+        try {
+          const repair = parseChatOutput(
+            await this.ai.plannerCompletion(
+              [
+                ...messages,
+                {
+                  role: "system",
+                  content: "The user's last message may be a change to an EXISTING daily session duration. Interpret the request faithfully: 'ขอเพียง/เอาแค่/เหลือ 30 นาที' means set NEW TOTAL duration to 30; 'ครึ่งชั่วโมง' is 30 minutes; 'ลดอีก' subtracts from existing duration. If clearly requested, return exactly JSON {reply:string, actions:[{type:'resize',id:string,date:'YYYY-MM-DD',duration:integer}]}, with a valid existing ID from the calendar. Do NOT add a task or claim saving. If unsure, use actions:[]. Keep the companion's normal personality and Thai tone.",
+                },
+              ],
+              plannerChatSchema,
+              signal,
+            ),
+          );
+          const repaired = validateOllamaDurationEdit(
+            snapshot, dto.date, dto.message, repair.actions,
+          );
+          if (repaired?.command) {
+            semantic = repaired;
+            output = { ...repair, actions: [repaired.command] };
+          }
+        } catch {
+          // A model that fails to interpret a request must never cause a
+          // fabricated activity change. Present a clarification instead.
+        }
+      }
+      if (semantic) {
+        if (semantic.command) {
+          output.actions = [semantic.command];
+        } else {
+          blocked = {
+            reason: semantic.reason ?? "ยังตีความคำสั่งแก้เวลาไม่ได้",
+            followUps: [{
+              label: "ตรวจตาราง",
+              prompt: "ช่วยบอกชื่อกิจกรรมและเวลาที่มีอยู่ในวันที่เลือก เพื่อให้ฉันระบุการเปลี่ยนแปลงอีกครั้ง",
+            }],
+          };
+          output = {
+            reply: "อืม… " + blocked.reason + " ค่ะ ฉันยังไม่ได้เปลี่ยนตารางนะ",
+            actions: [],
+          };
+        }
+      }
       // The reply must not falsely insist the schedule is full if the
       // deterministic command can be scheduled.
       if (output.actions.length === 1 &&
