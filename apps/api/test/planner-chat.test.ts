@@ -6,9 +6,13 @@ import {
   explainPlannerConstraint,
   parseChatOutput,
   previewDailyCapacityIncrease,
+  simpleAddFromMessage,
+  normalizePlannerActions,
+  freeStartForAdd,
+  explainExtendFollowUp,
   plannerMessages,
 } from "../src/planner/chat-engine";
-import { initial } from "../src/planner/engine";
+import { initial, today } from "../src/planner/engine";
 const require = createRequire(import.meta.url);
 const { PlannerService } = require("../dist/planner/planner.js");
 const now = Date.parse("2030-01-07T00:00:00+07:00"),
@@ -522,4 +526,128 @@ test("stale one-day approval is rejected without applying work or changing capac
   const state = await p.get();
   assert.equal(state.sessions.length, 2);
   assert.equal(state.capacityOverrides?.[future], undefined);
+});
+
+function fourMorningActivities(date: string) {
+  const s = initial();
+  s.settings.maxMinutes = 720;
+  s.sessions = [
+    { name: "ออกกำลังกาย", start: 480, duration: 30 },
+    { name: "ทำความสะอาดห้อง", start: 525, duration: 60 },
+    { name: "ฝึกโค้ดและภาษาอังกฤษ", start: 600, duration: 90 },
+    { name: "หางาน", start: 705, duration: 60 },
+  ].map((item, i) => ({
+    ...item,
+    id: `morning-${i}`,
+    goalId: `daily:morning-${i}`,
+    date,
+    fixed: false,
+    status: "planned" as const,
+    reminder: 10,
+  }));
+  return s;
+}
+test("real four-item 240-minute morning schedule accepts a 60-minute task before bedtime", () => {
+  const state = fourMorningActivities(date);
+  const action = {
+    type: "add" as const,
+    name: "ปรับปรุง Anime AI Companion",
+    duration: 60,
+    date,
+    fixed: false,
+  };
+  assert.equal(freeStartForAdd(state, action, date, now), 780);
+  const result = executeCommands(state, [action], date, now);
+  assert.equal(result.sessions.length, 5);
+  assert.equal(result.sessions[4].start, 780);
+  assert.equal(result.sessions.reduce((n, x) => n + x.duration, 0), 300);
+  assert.equal(state.sessions.length, 4);
+});
+test("explicit tomorrow 1-hour add beats model's wrong date, fixed flag and proposed late time", () => {
+  const reference = Date.parse("2030-01-07T15:00:00+07:00");
+  const wrong = [{ type: "add" as const, date: "2030-01-07",
+    name: "Incorrect", duration: 60, start: 1380, fixed: true }];
+  const command = normalizePlannerActions(wrong,
+    "พรุ่งนี้ เพิ่มงานปรับปรุง Anime AI Companion อีก 1 ชั่วโมง", reference);
+  assert.deepEqual(command, [{
+    type: "add", name: "ปรับปรุง Anime AI Companion", duration: 60,
+    date: "2030-01-08", fixed: false,
+  }]);
+  const tomorrow = fourMorningActivities("2030-01-08");
+  const result = executeCommands(tomorrow, command, "2030-01-07", reference);
+  assert.equal(result.sessions[4].date, "2030-01-08");
+  assert.equal(result.sessions[4].start, 780);
+});
+test("simple add parser declines ambiguous and advisory messages", () => {
+  for (const message of [
+    "พรุ่งนี้เพิ่มงานปรับปรุง Anime AI Companion อีก 1 ชั่วโมงดีไหม?",
+    "พรุ่งนี้เพิ่มงานปรับปรุง Anime AI Companion อีกหนึ่งช่วง",
+    "ช่วยเสนอเวลาว่างวันพรุ่งนี้หน่อย",
+    "พรุ่งนี้เพิ่มงานยาว 5 ชั่วโมง",
+  ]) assert.equal(simpleAddFromMessage(message, now), undefined);
+});
+test("short extend-time follow-up explains capacity is not full and suggests actual open slot", () => {
+  const reference = Date.parse("2030-01-07T15:00:00+07:00");
+  const state = fourMorningActivities("2030-01-08");
+  const guidance = explainExtendFollowUp(state, [
+    { role: "user", content: "พรุ่งนี้ เพิ่มงานปรับปรุง Anime AI Companion อีก 1 ชั่วโมง" },
+    { role: "assistant", content: "ยังเพิ่มไม่ได้",
+      outcome: "ยังไม่ได้เปลี่ยนตาราง · ไม่มีเวลาว่าง" },
+  ], "ขยายเวลา", reference);
+  assert.match(guidance?.reply ?? "", /240/);
+  assert.match(guidance?.reply ?? "", /720/);
+  assert.match(guidance?.reply ?? "", /13:00/);
+  assert.ok(guidance?.followUps.some((x) => x.prompt));
+  assert.ok(guidance?.followUps.some((x) => x.openSettings));
+});
+test("chat commits a concrete tomorrow add even when local model wrongly claims no time", async () => {
+  const tomorrow = new Date(Date.parse(today()) + 86400000)
+    .toISOString().slice(0, 10);
+  const { p, ai } = fixture(fourMorningActivities(tomorrow));
+  let calls = 0;
+  ai.plannerCompletion = async () => {
+    calls++;
+    return JSON.stringify({ reply: "เพิ่มไม่ได้ ไม่มีเวลาว่างค่ะ", actions: [] });
+  };
+  const result = await p.chat({
+    ...dto, date: today(), requestId: "correct-240-of-720",
+    message: "พรุ่งนี้ เพิ่มงานปรับปรุง Anime AI Companion อีก 1 ชั่วโมง",
+    autoApply: true,
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.proposal, undefined);
+  assert.match(result.message.outcome, /บันทึกตารางแล้ว/);
+  assert.doesNotMatch(result.message.content, /ไม่มีเวลาว่าง/);
+  const state = await p.get();
+  assert.equal(state.sessions.length, 5);
+  assert.equal(state.sessions[4].date, tomorrow);
+  assert.equal(state.sessions[4].start, 780);
+  assert.equal(state.settings.maxMinutes, 720);
+});
+test("chat short extension follow-up does not silently change bedtime or quota", async () => {
+  const tomorrow = new Date(Date.parse(today()) + 86400000)
+    .toISOString().slice(0, 10);
+  const state = fourMorningActivities(tomorrow) as any;
+  state.chats = {
+    yuna: [
+      { id: "old-user", role: "user",
+        content: "พรุ่งนี้ เพิ่มงานปรับปรุง Anime AI Companion อีก 1 ชั่วโมง",
+        createdAt: new Date().toISOString() },
+      { id: "old-assistant", role: "assistant",
+        content: "ขอเวลาอื่นค่ะ",
+        outcome: "ยังไม่ได้เปลี่ยนตาราง · ไม่มีเวลาว่าง",
+        createdAt: new Date().toISOString() },
+    ],
+  };
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => { throw new Error("should not call model"); };
+  const result = await p.chat({
+    ...dto, date: tomorrow, message: "ขยายเวลา", requestId: "expand-clarification",
+  });
+  assert.match(result.message.content, /240/);
+  assert.match(result.message.content, /720/);
+  assert.match(result.message.content, /13:00/);
+  assert.ok(result.message.followUps?.length);
+  assert.equal((await p.get()).sessions.length, 4);
+  assert.equal((await p.get()).settings.sleep, 1320);
 });
