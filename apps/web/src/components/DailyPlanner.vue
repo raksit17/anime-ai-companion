@@ -1,6 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import {
+  computed,
+  ref,
+  watch,
+  nextTick,
+  onMounted,
+  onBeforeUnmount,
+} from "vue";
 import { api } from "../api";
+import { useChat } from "../stores/chat";
+import PlannerAdvanced from "./PlannerAdvanced.vue";
 type Session = {
   id: string;
   name: string;
@@ -9,610 +18,930 @@ type Session = {
   duration: number;
   status: string;
   fixed: boolean;
-  note?: string;
 };
-type Goal = {
-  id?: string;
-  name: string;
-  duration: number;
-  days: number[];
-  preferred: number;
-  priority: number;
-  restDays: number;
-  reminder: number;
-  flexible: boolean;
-};
-type Proposal = {
+type Message = {
   id: string;
-  sessions: Session[];
-  unscheduled: string[];
-  reasons?: string[];
-  breakMinutes?: number;
+  role: string;
+  content: string;
+  createdAt: string;
+  outcome?: string;
 };
-type Weekly = {
-  from: string;
-  to: string;
-  total: number;
-  done: number;
-  recommendations: string[];
-  goals: {
-    id: string;
-    name: string;
-    total: number;
-    done: number;
-    missed: number;
-    skipped: number;
-    deferred: number;
-    rate: number;
-  }[];
-};
-const data = ref<{
-  weekly: Weekly;
-  weeklyReport?: { text: string; generatedAt: string };
-  goals: Goal[];
-  sessions: Session[];
-  settings: {
-    wake: number;
-    sleep: number;
-    breakMinutes: number;
-    maxMinutes: number;
-  };
-  progress: { done: number; skipped: number; minutes: number };
-}>();
-const date = ref(new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10)),
-  energy = ref("normal");
-const error = ref(""),
+type Proposal = { id: string; sessions: Session[]; unscheduled: string[] };
+const companion = useChat();
+const today = () =>
+  new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+const date = ref(today()),
+  month = ref(today().slice(0, 7)),
+  messages = ref<Message[]>([]),
+  sessions = ref<Session[]>([]);
+const input = ref(""),
+  error = ref(""),
   busy = ref(false),
-  proposal = ref<Proposal>(),
-  advice = ref(""),
-  message = ref(""),
-  reminders = ref<Session[]>([]);
-const blank = (): Goal => ({
-  name: "",
-  duration: 45,
-  days: [1, 2, 3, 4, 5],
-  preferred: 780,
-  priority: 2,
-  restDays: 0,
-  reminder: 10,
-  flexible: true,
+  loading = ref(false),
+  autoApply = ref(true),
+  advanced = ref(false),
+  proposal = ref<Proposal>();
+const reminders = ref<Session[]>([]),
+  log = ref<HTMLElement>(),
+  now = ref(Date.now());
+const settings = ref({
+  wake: 480,
+  sleep: 1320,
+  breakMinutes: 15,
+  maxMinutes: 240,
 });
-const goal = ref<Goal>(blank()),
-  preferred = ref("13:00"),
-  wake = ref("08:00"),
-  sleep = ref("22:00");
-const event = ref({ name: "", date: date.value, start: 840, duration: 60 }),
-  eventTime = ref("14:00");
-const moving = ref(""),
-  moveDate = ref(date.value),
-  moveTime = ref("10:00"),
-  note = ref("");
-const days = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
 const clock = (n: number) =>
   `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
-const minutes = (s: string) =>
-  Number(s.split(":")[0]) * 60 + Number(s.split(":")[1]);
-const sessions = computed(
-  () =>
-    data.value?.sessions
-      .filter((s) => s.date === date.value)
-      .sort((a, b) => a.start - b.start) ?? [],
+const shift = (d: string, n: number) =>
+  new Date(Date.parse(d) + n * 86400000).toISOString().slice(0, 10);
+const longDate = (d: string) =>
+  new Date(d + "T00:00:00+07:00").toLocaleDateString("th-TH", {
+    timeZone: "Asia/Bangkok",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+const daySessions = computed(() =>
+  sessions.value
+    .filter((s) => s.date === date.value)
+    .sort((a, b) => a.start - b.start),
 );
-const preview = computed(
+const active = computed(() =>
+  daySessions.value.filter(
+    (s) => s.status === "planned" || s.status === "done",
+  ),
+);
+const done = computed(
+  () => daySessions.value.filter((s) => s.status === "done").length,
+);
+const totalMinutes = computed(() =>
+  active.value.reduce((n, s) => n + s.duration, 0),
+);
+const next = computed(
   () =>
-    proposal.value?.sessions
+    sessions.value
       .filter(
         (s) =>
-          !data.value?.sessions.some(
-            (x) =>
-              x.id === s.id &&
-              x.date === s.date &&
-              x.start === s.start &&
-              x.duration === s.duration &&
-              x.status === s.status,
-          ),
+          s.status === "planned" &&
+          Date.parse(`${s.date}T00:00:00+07:00`) +
+            (s.start + s.duration) * 60000 >
+            now.value,
       )
-      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start) ?? [],
+      .sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start)[0],
 );
-async function load() {
-  data.value = await api("/planner");
-  wake.value = clock(data.value!.settings.wake);
-  sleep.value = clock(data.value!.settings.sleep);
+const calendar = computed(() => {
+  const first = month.value + "-01";
+  const offset = (new Date(first).getUTCDay() + 6) % 7;
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = shift(first, i - offset);
+    return {
+      date: d,
+      day: Number(d.slice(-2)),
+      other: !d.startsWith(month.value),
+      count: sessions.value.filter(
+        (s) => s.date === d && s.status === "planned",
+      ).length,
+    };
+  });
+});
+const week = computed(() => {
+  const weekday = (new Date(date.value).getUTCDay() + 6) % 7;
+  return Array.from({ length: 7 }, (_, i) => shift(date.value, i - weekday));
+});
+const names = ["จ", "อ", "พ", "พฤ", "ศ", "ส", "อา"];
+const label = (s: string) =>
+  ({ planned: "รอทำ", done: "เสร็จแล้ว", skipped: "ข้าม", deferred: "พักไว้" })[
+    s
+  ] ?? s;
+function select(d: string) {
+  date.value = d;
+  month.value = d.slice(0, 7);
 }
-async function run(fn: () => Promise<void>) {
-  if (busy.value) return;
+function changeMonth(delta: number) {
+  const d = new Date(month.value + "-01");
+  d.setUTCMonth(d.getUTCMonth() + delta);
+  month.value = d.toISOString().slice(0, 7);
+}
+async function refresh() {
+  const state = await api("/planner");
+  sessions.value = state.sessions;
+  settings.value = state.settings;
+}
+let historyVersion = 0;
+watch(
+  () => companion.character?.id,
+  async (id) => {
+    const version = ++historyVersion;
+    messages.value = [];
+    proposal.value = undefined;
+    if (!id) return;
+    loading.value = true;
+    try {
+      const result = await api<Message[]>(
+        `/planner/chat?characterId=${encodeURIComponent(id)}`,
+      );
+      if (version === historyVersion) messages.value = result;
+    } catch (e) {
+      error.value = String(e);
+    } finally {
+      if (version === historyVersion) loading.value = false;
+    }
+  },
+  { immediate: true },
+);
+watch(
+  () => messages.value.length,
+  async () => {
+    await nextTick();
+    log.value?.scrollTo({ top: log.value.scrollHeight, behavior: "smooth" });
+  },
+);
+async function send(text = input.value) {
+  if (busy.value || !text.trim() || !companion.character) return;
   busy.value = true;
   error.value = "";
+  const characterId = companion.character.id,
+    requestId = crypto.randomUUID();
+  const pending: Message = {
+    id: requestId,
+    role: "user",
+    content: text,
+    createdAt: new Date().toISOString(),
+  };
+  messages.value.push(pending);
+  input.value = "";
   try {
-    await fn();
+    const result = await api<{ message: Message; proposal?: Proposal }>(
+      "/planner/chat",
+      "POST",
+      {
+        characterId,
+        requestId,
+        date: date.value,
+        message: text,
+        autoApply: autoApply.value,
+      },
+      135000,
+    );
+    if (companion.character?.id === characterId) {
+      messages.value.push(result.message);
+      proposal.value = result.proposal;
+    }
+    await refresh();
+  } catch (e) {
+    error.value = String(e);
+    input.value = text;
+    messages.value = messages.value.filter((m) => m.id !== requestId);
+    await refresh().catch(() => {});
+  } finally {
+    busy.value = false;
+  }
+}
+async function mark(s: Session, status: string) {
+  if (busy.value) return;
+  error.value = "";
+  busy.value = true;
+  try {
+    await api(`/planner/sessions/${s.id}`, "PATCH", { status });
+    proposal.value = undefined;
+    await refresh();
   } catch (e) {
     error.value = String(e);
   } finally {
     busy.value = false;
   }
 }
-async function saveGoal() {
-  await run(async () => {
-    const { id, ...body } = goal.value;
-    await api(
-      id ? `/planner/goals/${id}` : "/planner/goals",
-      id ? "PATCH" : "POST",
-      { ...body, preferred: minutes(preferred.value) },
-    );
-    goal.value = blank();
+async function confirm() {
+  if (!proposal.value || busy.value) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    await api(`/planner/proposals/${proposal.value.id}/confirm`, "POST");
     proposal.value = undefined;
-    await load();
-  });
+    await refresh();
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
 }
-function edit(g: Goal) {
-  goal.value = { ...g, days: [...g.days] };
-  preferred.value = clock(g.preferred);
-}
+let timer: ReturnType<typeof setInterval> | undefined;
+let polling = false;
+const notified = new Set<string>();
 async function poll() {
+  if (polling) return;
+  polling = true;
+  now.value = Date.now();
   try {
     reminders.value = await api("/planner/reminders");
-    if (data.value && !data.value.weeklyReport) {
-      const latest = await api("/planner");
-      data.value.weeklyReport = latest.weeklyReport;
-    }
+    if ("Notification" in window && Notification.permission === "granted")
+      for (const s of reminders.value) {
+        if (!notified.has(s.id)) {
+          new Notification("ถึงเวลากิจกรรม", {
+            body: `${clock(s.start)} ${s.name}`,
+          });
+          notified.add(s.id);
+        }
+      }
+    if (!busy.value) await refresh();
   } catch {
-    /* Main load/actions display connection errors; retry reminders next tick. */
+    /* Action errors remain visible. Retry when the API returns. */
+  } finally {
+    polling = false;
   }
-}
-let timer: ReturnType<typeof setInterval>;
-onMounted(() => {
-  void run(load);
-  void poll();
-  timer = setInterval(() => void checkNotifications(), 30000);
-});
-onBeforeUnmount(() => clearInterval(timer));
-async function mark(s: Session, status: string) {
-  await run(async () => {
-    await api(`/planner/sessions/${s.id}`, "PATCH", {
-      status,
-      note: note.value,
-    });
-    proposal.value = undefined;
-    note.value = "";
-    await load();
-    await poll();
-  });
 }
 async function notify() {
-  if (!("Notification" in window)) {
-    error.value = "อุปกรณ์นี้ไม่รองรับการแจ้งเตือนเบราว์เซอร์";
-    return;
-  }
-  const permission = await Notification.requestPermission();
-  if (permission === "granted")
-    new Notification("Daily Planner", {
-      body: "เปิดการแจ้งเตือนแล้ว กรุณาเปิดแอปค้างไว้",
-    });
+  if ("Notification" in window) await Notification.requestPermission();
+  else error.value = "อุปกรณ์นี้ไม่รองรับการแจ้งเตือนเบราว์เซอร์";
 }
-const seen = new Set<string>();
-async function checkNotifications() {
-  await poll();
-  if ("Notification" in window && Notification.permission === "granted")
-    for (const s of reminders.value)
-      if (!seen.has(s.id)) {
-        new Notification("ถึงเวลากิจกรรม", {
-          body: `${s.name} · ${clock(s.start)}`,
-        });
-        seen.add(s.id);
-      }
-}
+onMounted(() => {
+  void refresh().catch((e) => (error.value = String(e)));
+  timer = setInterval(() => void poll(), 30000);
+});
+onBeforeUnmount(() => clearInterval(timer));
+watch(advanced, (value) => {
+  if (!value) void refresh().catch((e) => (error.value = String(e)));
+});
 </script>
 <template>
-  <section class="planner">
-    <h2>Adaptive Life Planner</h2>
-    <p class="muted">
-      เวลาไทย (Asia/Bangkok) · เป้าหมายร่วมของผู้ใช้ทุกตัวละคร
+  <div class="daily-home">
+    <header class="planner-header">
+      <div>
+        <small>YOUR DAY, TOGETHER</small>
+        <h2>วันนี้กับ{{ companion.character?.name || "ยูนะ" }}</h2>
+        <p>บอกสิ่งที่อยากทำ แล้วมาจัดวันของคุณด้วยกัน</p>
+      </div>
+      <button class="quiet" @click="advanced = !advanced">
+        {{ advanced ? "กลับตารางวันนี้" : "ตั้งค่าเพิ่มเติม" }}
+      </button>
+    </header>
+    <p v-if="error" role="alert" class="error">
+      {{ error }} <button @click="error = ''">ปิด</button>
     </p>
-    <p v-if="error" role="alert" class="error">{{ error }}</p>
-    <div v-for="r in reminders" :key="r.id" class="planner-card" role="status">
-      🔔 {{ r.name }} {{ clock(r.start) }}
+    <div v-if="reminders.length" class="reminder" role="status">
+      🔔 {{ reminders[0].name }} · {{ clock(reminders[0].start) }}
       <button
-        :disabled="busy"
         @click="
-          run(async () => {
-            await api(`/planner/reminders/${r.id}/ack`, 'POST');
-            proposal = undefined;
-            await poll();
-          })
+          api(`/planner/reminders/${reminders[0].id}/ack`, 'POST')
+            .then(poll)
+            .catch((e) => (error = String(e)))
         "
       >
         รับทราบ
       </button>
     </div>
-    <button @click="notify">เปิดแจ้งเตือน</button>
-    <p class="muted small">
-      แจ้งเตือนเมื่อ API และหน้าต่างแอปเปิดอยู่ ตรวจทุก 30 วินาที
-    </p>
-    <fieldset :disabled="busy">
-      <details open v-if="data?.weekly" class="weekly">
-        <summary>
-          ทบทวนสัปดาห์ก่อน {{ data.weekly.from }} – {{ data.weekly.to }}
-        </summary>
-        <p v-if="!data.weekly.total">
-          ยังไม่มีข้อมูลสัปดาห์ก่อน ระบบจะเริ่มวิเคราะห์เมื่อมีประวัติ
-        </p>
-        <template v-else>
-          <p>สำเร็จ {{ data.weekly.done }} / {{ data.weekly.total }} กิจกรรม</p>
-          <p v-for="g in data.weekly.goals" :key="g.id">
-            {{ g.name }}: {{ Math.round(g.rate * 100) }}% · ข้าม
-            {{ g.skipped }} · ยังไม่บันทึกผล {{ g.missed }} · พักไว้
-            {{ g.deferred }}
-          </p>
-          <p v-for="r in data.weekly.recommendations" :key="r">{{ r }}</p>
+    <PlannerAdvanced v-if="advanced" />
+    <div v-else class="planner-grid">
+      <section class="agenda" aria-label="ปฏิทินและตารางวันนี้">
+        <div class="date-heading">
+          <div>
+            <span class="eyebrow">{{
+              date === today() ? "TODAY" : "YOUR SCHEDULE"
+            }}</span>
+            <h3>{{ longDate(date) }}</h3>
+          </div>
+          <button @click="select(today())">วันนี้</button>
+        </div>
+        <div class="week-strip">
           <button
-            @click="
-              run(async () => {
-                await api('/planner/weekly-review', 'POST', {}, 135000);
-                await load();
-              })
-            "
+            v-for="(d, i) in week"
+            :key="d"
+            :class="{ selected: d === date }"
+            @click="select(d)"
           >
-            อ่านผลวิเคราะห์ AI รายสัปดาห์
+            <small>{{ names[i] }}</small
+            ><strong>{{ Number(d.slice(-2)) }}</strong
+            ><i
+              v-if="
+                sessions.some((s) => s.date === d && s.status === 'planned')
+              "
+              >•</i
+            >
           </button>
-          <p class="advice" v-if="data.weeklyReport">
-            {{ data.weeklyReport.text }}
-          </p>
-          <small v-if="data.weeklyReport"
-            >วิเคราะห์เมื่อ
-            {{
-              new Date(data.weeklyReport.generatedAt).toLocaleString("th-TH", {
+        </div>
+        <details class="month-picker">
+          <summary>เปิดปฏิทินรายเดือน</summary>
+          <div class="month-nav">
+            <button aria-label="เดือนก่อน" @click="changeMonth(-1)">‹</button
+            ><strong>{{
+              new Date(month + "-01").toLocaleDateString("th-TH", {
+                month: "long",
+                year: "numeric",
                 timeZone: "Asia/Bangkok",
               })
-            }}</small
-          >
-          <p class="muted small">
-            API วิเคราะห์อัตโนมัติสัปดาห์ละครั้งเมื่อเปิดอยู่ รายงานเป็นภาพรวม ณ
-            เวลาวิเคราะห์ ไม่มีการเปลี่ยนตารางจนกดยืนยัน
-          </p>
-        </template>
-      </details>
-      <label>วันที่ <input type="date" v-model="date" required /></label>
-      <label
-        >พลังงาน
-        <select v-model="energy">
-          <option value="normal">ปกติ</option>
-          <option value="low">น้อย — กิจกรรมใหม่ไม่เกิน 20 นาที</option>
-        </select></label
-      >
-      <button
-        class="primary"
-        @click="
-          run(async () => {
-            proposal = await api('/planner/proposals', 'POST', {
-              date,
-              energy,
-            });
-          })
-        "
-      >
-        เสนอแผน 7 วัน
-      </button>
-      <button
-        @click="
-          run(async () => {
-            proposal = await api('/planner/adaptive', 'POST', { date, energy });
-          })
-        "
-      >
-        ปรับตารางเดิมตามความคืบหน้า
-      </button>
-      <p class="muted small">
-        ปรับกิจกรรมยืดหยุ่นใน 7 วันที่เลือก รักษานัดคงที่และวันพัก
-        ไม่สะสมงานเก่าที่พลาด
-      </p>
-      <p class="muted small">
-        เติมกิจกรรมที่ยังไม่มี ไม่ย้ายตารางเดิม และไม่สะสมงานที่ข้ามไปวันถัดไป
-      </p>
-      <div v-if="proposal" class="planner-card">
-        <h3>ตัวอย่างก่อนบันทึก</h3>
-        <p v-if="proposal.breakMinutes">
-          เว้นพักอย่างน้อย {{ proposal.breakMinutes }} นาที
-        </p>
-        <p v-for="reason in proposal.reasons" :key="reason">{{ reason }}</p>
-        <p v-if="!preview.length">ไม่มีกิจกรรมใหม่</p>
-        <div v-for="s in preview" :key="s.id" class="planner-card">
-          <small v-if="data?.sessions.find((x) => x.id === s.id)"
-            >เดิม: {{ data.sessions.find((x) => x.id === s.id)!.date }}
-            {{ clock(data.sessions.find((x) => x.id === s.id)!.start) }} ·
-            {{ data.sessions.find((x) => x.id === s.id)!.duration }} นาที</small
-          >
-          <p>
-            {{ s.name }} →
-            {{
-              s.status === "deferred"
-                ? "พักไว้ (ยังไม่ได้จัดเวลา)"
-                : `${s.date} ${clock(s.start)}–${clock(s.start + s.duration)}`
-            }}
-          </p>
-        </div>
-        <p v-for="u in proposal.unscheduled" :key="u" class="muted">{{ u }}</p>
-        <button
-          class="primary"
-          @click="
-            run(async () => {
-              await api(`/planner/proposals/${proposal!.id}/confirm`, 'POST');
-              proposal = undefined;
-              await load();
-            })
-          "
-        >
-          ยืนยันแผน</button
-        ><button @click="proposal = undefined">ยกเลิก</button>
-      </div>
-      <h3>ตารางวันที่ {{ date }}</h3>
-      <p v-if="!sessions.length">ยังไม่มีกิจกรรม ลองเพิ่มเป้าหมายแล้วเสนอแผน</p>
-      <label
-        >บันทึกผล เช่น เซต/ครั้ง/น้ำหนัก หรือหัวข้อที่ฝึก
-        <input v-model="note" maxlength="1000"
-      /></label>
-      <article v-for="s in sessions" :key="s.id" class="planner-card">
-        <strong
-          >{{ clock(s.start) }}–{{ clock(s.start + s.duration) }}
-          {{ s.name }}</strong
-        >
-        <p>
-          {{ s.fixed ? "🔒 นัด/เวลาคงที่" : "ยืดหยุ่น" }} ·
-          {{
-            s.status === "done"
-              ? "สำเร็จ"
-              : s.status === "skipped"
-                ? "ข้าม"
-                : s.status === "deferred"
-                  ? "พักไว้"
-                  : "รอทำ"
-          }}
-        </p>
-        <p v-if="s.note">{{ s.note }}</p>
-        <template v-if="s.status === 'planned'"
-          ><button @click="mark(s, 'done')">✓ สำเร็จ</button
-          ><button @click="mark(s, 'skipped')">ข้าม</button
-          ><button
-            v-if="!s.fixed"
-            @click="
-              moving = s.id;
-              moveDate = s.date;
-              moveTime = clock(s.start);
-            "
-          >
-            ย้ายเวลา
-          </button></template
-        >
-      </article>
-      <form
-        v-if="moving"
-        @submit.prevent="
-          run(async () => {
-            proposal = await api(`/planner/sessions/${moving}/move`, 'POST', {
-              date: moveDate,
-              start: minutes(moveTime),
-            });
-            moving = '';
-          })
-        "
-      >
-        <label
-          >ย้ายไปวันที่<input v-model="moveDate" type="date" required /></label
-        ><label>เวลา<input v-model="moveTime" type="time" required /></label
-        ><button>ตรวจและเสนอการย้าย</button
-        ><button type="button" @click="moving = ''">ยกเลิก</button>
-      </form>
-      <p v-if="data">
-        สะสม: สำเร็จ {{ data.progress.done }} · ข้าม
-        {{ data.progress.skipped }} · ฝึก {{ data.progress.minutes }} นาที
-      </p>
-      <details>
-        <summary>เป้าหมายและกิจกรรมซ้ำ</summary>
-        <article v-for="g in data?.goals" :key="g.id" class="planner-card">
-          {{ g.name }} · {{ g.days.length }} วัน/สัปดาห์ · {{ g.duration }} นาที
-          <button @click="edit(g)">แก้ไข</button
-          ><button
-            @click="
-              run(async () => {
-                await api(`/planner/goals/${g.id}`, 'DELETE');
-                proposal = undefined;
-                await load();
-              })
-            "
-          >
-            ลบเป้าหมาย
-          </button>
-        </article>
-        <form @submit.prevent="saveGoal">
-          <label
-            >ชื่อเป้าหมาย<input
-              v-model="goal.name"
-              required
-              maxlength="120"
-              placeholder="อังกฤษ / Coding / ออกกำลังกาย"
-          /></label>
-          <label
-            >นาที<input
-              v-model.number="goal.duration"
-              type="number"
-              min="10"
-              max="240"
-              required /></label
-          ><label
-            >เวลาที่ชอบ<input v-model="preferred" type="time" required
-          /></label>
-          <div class="days">
-            <label v-for="(d, i) in days" :key="i"
-              ><input type="checkbox" v-model="goal.days" :value="i" />{{
-                d
-              }}</label
-            >
+            }}</strong
+            ><button aria-label="เดือนถัดไป" @click="changeMonth(1)">›</button>
           </div>
-          <label
-            >ความสำคัญ<select v-model.number="goal.priority">
-              <option :value="1">ต่ำ</option>
-              <option :value="2">กลาง</option>
-              <option :value="3">สูง</option>
-            </select></label
+          <div class="month-grid">
+            <span v-for="n in names" :key="n">{{ n }}</span
+            ><button
+              v-for="d in calendar"
+              :key="d.date"
+              :class="{ selected: d.date === date, other: d.other }"
+              :aria-label="`${d.date} ${d.count} กิจกรรม`"
+              @click="select(d.date)"
+            >
+              {{ d.day }}<small>{{ d.count ? `${d.count} งาน` : " " }}</small>
+            </button>
+          </div>
+        </details>
+        <div class="day-stats">
+          <span
+            ><strong>{{ done }}/{{ daySessions.length }}</strong> สำเร็จ</span
+          ><span
+            ><strong>{{ totalMinutes }}</strong> นาทีในแผน</span
+          ><span
+            >พัก
+            <strong>{{ Math.max(15, settings.breakMinutes) }}</strong>
+            นาที*</span
           >
-          <label
-            >วันพักระหว่างครั้ง<input
-              v-model.number="goal.restDays"
-              type="number"
-              min="0"
-              max="6"
-              required /></label
-          ><label
-            >เตือนก่อน (นาที)<input
-              v-model.number="goal.reminder"
-              type="number"
-              min="0"
-              max="120"
-              required
-          /></label>
-          <label
-            ><input type="checkbox" v-model="goal.flexible" />ย้ายเวลาได้</label
-          ><button class="primary">
-            {{ goal.id ? "บันทึก" : "เพิ่มเป้าหมาย" }}</button
-          ><button type="button" @click="goal = blank()">ล้าง</button>
-        </form>
-      </details>
-      <details>
-        <summary>เพิ่มนัดสำคัญ / เวลาพักกลางวัน</summary>
-        <form
-          @submit.prevent="
-            run(async () => {
-              proposal = await api('/planner/events/proposal', 'POST', {
-                ...event,
-                start: minutes(eventTime),
-              });
-
-              event.name = '';
-              await load();
-            })
-          "
+        </div>
+        <div
+          v-if="next && date === today() && next.date === date"
+          class="up-next"
         >
-          <label
-            >ชื่อนัด<input
-              v-model="event.name"
-              required
-              maxlength="120" /></label
-          ><label
-            >วันที่<input v-model="event.date" type="date" required /></label
-          ><label>เวลา<input v-model="eventTime" type="time" required /></label
-          ><label
-            >ระยะเวลา (นาที)<input
-              v-model.number="event.duration"
-              type="number"
-              min="5"
-              max="720"
-              required /></label
-          ><button>เสนอแผนพร้อมนัดใหม่</button>
+          <small>กิจกรรมถัดไป / กำลังทำ</small
+          ><strong>{{ clock(next.start) }} · {{ next.name }}</strong>
+        </div>
+        <div v-if="!daySessions.length" class="empty-day">
+          <span>☀</span>
+          <h3>วันนี้ยังว่างอยู่</h3>
+          <p>
+            พิมพ์หา{{
+              companion.character?.name || "ยูนะ"
+            }}
+            เช่น<br />“วันนี้ฝึกอังกฤษ 30 นาที และ Coding 1 ชั่วโมง”
+          </p>
+          <button
+            @click="
+              input =
+                'วันนี้ฝึกอังกฤษ 30 นาที และ Coding 1 ชั่วโมง ช่วยจัดให้หน่อย'
+            "
+          >
+            ใช้ตัวอย่างนี้
+          </button>
+        </div>
+        <ol class="timeline">
+          <li v-for="(s, i) in daySessions" :key="s.id" :class="s.status">
+            <div class="time">
+              <strong>{{ clock(s.start) }}</strong
+              ><small>{{ clock(s.start + s.duration) }}</small>
+            </div>
+            <div class="task">
+              <div class="task-title">
+                <strong>{{ s.name }}</strong
+                ><span class="status">{{ label(s.status) }}</span>
+              </div>
+              <p>
+                {{ s.duration }} นาที <span v-if="s.fixed">· นัดคงที่</span>
+              </p>
+              <div v-if="s.status === 'planned'" class="task-actions">
+                <button :disabled="busy" @click="mark(s, 'done')">
+                  ✓ เสร็จแล้ว</button
+                ><button
+                  :disabled="busy"
+                  @click="input = `เลื่อน ${s.name} ไปเวลา `"
+                >
+                  เลื่อน</button
+                ><button :disabled="busy" @click="mark(s, 'skipped')">
+                  ข้าม
+                </button>
+              </div>
+              <small v-if="s.status === 'deferred'"
+                >ยังไม่จองเวลา · บอกยูนะว่าต้องการย้ายไปวันไหน</small
+              >
+            </div>
+          </li>
+        </ol>
+        <p class="calendar-note">
+          เวลาไทย · {{ clock(settings.wake) }}–{{ clock(settings.sleep) }} ·
+          กิจกรรมยืดหยุ่นไม่เกิน
+          {{ settings.maxMinutes }} นาที/วัน<br />*การปรับแบบ Adaptive
+          เว้นพักอย่างน้อย 15 นาที
+        </p>
+      </section>
+      <section class="planner-conversation" aria-label="แชตวางแผนกับตัวละคร">
+        <div class="conversation-heading">
+          <div class="avatar">✦</div>
+          <div>
+            <strong>{{ companion.character?.name || "ยูนะ" }}</strong
+            ><small>คุยเรื่องวันนี้ · จำบทสนทนาต่อเนื่อง</small>
+          </div>
+          <button class="quiet" @click="notify" title="แจ้งเตือนเมื่อเปิดแอป">
+            ♧ แจ้งเตือน
+          </button>
+        </div>
+        <div class="conversation-log" ref="log" aria-live="polite">
+          <p v-if="loading">กำลังโหลดบทสนทนา…</p>
+          <div v-if="!messages.length && !loading" class="chat-welcome">
+            <h3>วันนี้อยากทำอะไรบ้าง?</h3>
+            <p>
+              บอกเป้าหมาย เวลาที่สะดวก หรือนัดสำคัญได้ในข้อความเดียว
+              ตารางจะอัปเดตตรงข้าง ๆ
+            </p>
+            <p class="muted">ถ้าเหนื่อยหรือมีธุระเพิ่ม ก็บอกในแชตนี้ได้เลย</p>
+          </div>
+          <article
+            v-for="m in messages"
+            :key="m.id"
+            :class="['planner-message', m.role]"
+          >
+            <small>{{
+              m.role === "user" ? "คุณ" : companion.character?.name
+            }}</small>
+            <div class="planner-bubble">{{ m.content }}</div>
+            <div v-if="m.outcome" class="action-receipt">{{ m.outcome }}</div>
+          </article>
+          <div v-if="busy" class="thinking" role="status">
+            {{ companion.character?.name || "ยูนะ" }}กำลังดูตารางให้…
+          </div>
+        </div>
+        <div v-if="proposal" class="chat-preview">
+          <strong>ตัวอย่างแผน · ยังไม่บันทึก</strong>
+          <p
+            v-for="s in proposal.sessions.filter(
+              (s) =>
+                !sessions.some(
+                  (x) =>
+                    x.id === s.id &&
+                    x.date === s.date &&
+                    x.start === s.start &&
+                    x.duration === s.duration &&
+                    x.status === s.status,
+                ),
+            )"
+            :key="s.id"
+          >
+            {{ s.date }} {{ clock(s.start) }} {{ s.name }} ·
+            {{ s.duration }} นาที · {{ label(s.status) }}
+          </p>
+          <p v-for="n in proposal.unscheduled" :key="n">{{ n }}</p>
+          <button :disabled="busy" @click="confirm">ยืนยัน</button
+          ><button @click="proposal = undefined">ยกเลิก</button>
+        </div>
+        <div class="quick-prompts">
+          <button
+            :disabled="busy"
+            @click="send('วันนี้เหนื่อย ช่วยลดภาระและจัดเวลาพักให้หน่อย')"
+          >
+            วันนี้เหนื่อย</button
+          ><button
+            :disabled="busy"
+            @click="
+              input =
+                'วันนี้มีนัดเวลา 14:00 น. เป็นเวลา 1 ชั่วโมง ช่วยปรับตารางให้ด้วย'
+            "
+          >
+            มีนัดเพิ่ม</button
+          ><button
+            :disabled="busy"
+            @click="send('วันนี้เหลืออะไรต้องทำบ้าง ช่วยแนะนำสั้น ๆ หน่อย')"
+          >
+            เหลืออะไรบ้าง
+          </button>
+        </div>
+        <form class="planner-composer" @submit.prevent="send()">
+          <textarea
+            v-model="input"
+            aria-label="ข้อความถึงยูนะ"
+            maxlength="4000"
+            placeholder="เช่น วันนี้ฝึกอังกฤษ 30 นาที Coding 2 ชั่วโมง มีนัด 14:00…"
+            :disabled="busy || !companion.character"
+            @keydown.enter.exact.prevent="!$event.isComposing && send()"
+          ></textarea>
+          <div>
+            <label
+              ><input
+                type="checkbox"
+                v-model="autoApply"
+                :disabled="busy"
+              />จัดตารางทันทีเมื่อฉันสั่ง</label
+            ><button
+              class="primary"
+              :disabled="busy || !input.trim() || !companion.character"
+            >
+              ส่ง ↗
+            </button>
+          </div>
+          <small
+            >Enter ส่ง · Shift+Enter ขึ้นบรรทัดใหม่ ·
+            ปิดตัวเลือกเพื่อดูแผนก่อนยืนยัน</small
+          >
         </form>
-      </details>
-      <details v-if="data">
-        <summary>เวลาว่างและขีดจำกัด</summary>
-        <form
-          @submit.prevent="
-            run(async () => {
-              await api('/planner/settings', 'PATCH', {
-                ...data!.settings,
-                wake: minutes(wake),
-                sleep: minutes(sleep),
-              });
-              proposal = undefined;
-              await load();
-            })
-          "
-        >
-          <label>เริ่มวัน<input type="time" v-model="wake" required /></label
-          ><label>เข้านอน<input type="time" v-model="sleep" required /></label
-          ><label
-            >พักระหว่างกิจกรรม (นาที)<input
-              type="number"
-              v-model.number="data.settings.breakMinutes"
-              min="0"
-              max="120"
-              required /></label
-          ><label
-            >ภาระกิจกรรมยืดหยุ่นสูงสุด/วัน (นาที)<input
-              type="number"
-              v-model.number="data.settings.maxMinutes"
-              min="10"
-              max="720"
-              required /></label
-          ><button>บันทึก</button>
-        </form>
-      </details>
-      <h3>คุยกับ AI เรื่องแผน</h3>
-      <form
-        @submit.prevent="
-          run(async () => {
-            advice = (await api('/planner/advice', 'POST', { message }, 135000))
-              .text;
-          })
-        "
-      >
-        <textarea
-          v-model="message"
-          required
-          maxlength="2000"
-          placeholder="วันนี้เหนื่อย อยากปรับเป้าหมายอย่างไรดี"
-        ></textarea
-        ><button>ขอคำแนะนำ</button>
-      </form>
-      <p class="advice">{{ advice }}</p>
-    </fieldset>
-    <p v-if="busy" role="status">กำลังดำเนินการ…</p>
-  </section>
+      </section>
+    </div>
+  </div>
 </template>
 <style scoped>
-.planner {
-  padding: 20px;
+.daily-home {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  padding: 24px;
+  gap: 16px;
+  color: #303c37;
+}
+.planner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0;
+  background: none;
+  border: 0;
+  height: auto;
+  flex-shrink: 0;
+}
+.planner-header small {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #7c8e74;
+}
+.planner-header h2 {
+  margin: 5px 0;
+  font-size: 25px;
+}
+.planner-header p {
+  margin: 0;
+  font-size: 13px;
+  color: #7e877e;
+}
+.quiet {
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid #dde4d8;
+}
+.planner-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) minmax(320px, 1fr);
+  gap: 22px;
+  flex: 1;
   min-height: 0;
 }
-.planner h2 {
-  margin: 0 0 8px;
+.agenda {
+  overflow: auto;
+  padding-right: 4px;
 }
-.planner h3 {
-  margin-top: 22px;
-}
-.planner fieldset {
-  border: 0;
-  padding: 0;
-  min-width: 0;
-}
-.planner label {
-  display: block;
-  margin: 10px 0;
-}
-.planner input:not([type="checkbox"]),
-.planner select,
-.planner textarea {
-  width: 100%;
-}
-.planner-card {
-  padding: 12px;
-  border: 1px solid #738b8555;
-  border-radius: 12px;
-  margin: 10px 0;
-}
-.planner button {
-  margin: 4px;
-}
-.planner details {
-  border-top: 1px solid #738b8555;
-  padding: 14px 0;
-}
-.days {
+.date-heading,
+.month-nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
 }
-.advice {
-  white-space: pre-wrap;
+.date-heading h3 {
+  font-size: 18px;
+  margin: 5px 0 16px;
 }
-.planner summary {
+.week-strip {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.week-strip button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 64px;
+  padding: 8px 3px;
+  background: #eff2eb;
+  border-radius: 12px;
+}
+.week-strip small {
+  font-size: 11px;
+}
+.week-strip strong {
+  font-size: 19px;
+}
+.selected {
+  background: #748b66 !important;
+  color: white !important;
+}
+.week-strip i {
+  height: 5px;
+  font-size: 12px;
+  line-height: 6px;
+}
+.month-picker {
+  margin: 14px 0;
+  font-size: 12px;
+}
+.month-picker summary {
   cursor: pointer;
+  color: #6d7d65;
+}
+.month-nav {
+  margin: 10px 0;
+}
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+  text-align: center;
+}
+.month-grid button {
+  padding: 6px;
+  font-size: 13px;
+}
+.month-grid small {
+  display: block;
+  font-size: 9px;
+  min-height: 12px;
+}
+.other {
+  opacity: 0.4;
+}
+.day-stats {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  padding: 14px 0;
+  border-bottom: 1px solid #e3e8de;
+}
+.day-stats strong {
+  font-size: 16px;
+}
+.up-next {
+  margin-top: 16px;
+  background: #e8eedf;
+  padding: 13px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.up-next small {
+  font-size: 10px;
+  color: #6f8063;
+}
+.empty-day {
+  text-align: center;
+  padding: 40px 10px;
+  color: #798171;
+}
+.empty-day > span {
+  font-size: 36px;
+}
+.empty-day h3 {
+  font-size: 18px;
+}
+.empty-day p {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0;
+}
+.timeline li {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.time {
+  width: 48px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.time strong {
+  font-size: 14px;
+}
+.time small {
+  font-size: 11px;
+  color: #8b9489;
+  margin-top: 3px;
+}
+.task {
+  flex: 1;
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid #dce4d7;
+  border-left: 3px solid #95a788;
+  border-radius: 10px;
+  background: white;
+}
+.task-title {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.task-title strong {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.status {
+  font-size: 10px;
+  white-space: nowrap;
+  color: #7a8973;
+}
+.task p {
+  font-size: 11px;
+  color: #8b9489;
+  margin: 7px 0;
+}
+.task-actions {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.task-actions button {
+  font-size: 11px;
+  padding: 6px 9px;
+}
+.done .task {
+  opacity: 0.65;
+  background: #f0f4eb;
+}
+.skipped .task,
+.deferred .task {
+  border-left-color: #c5b38d;
+}
+.calendar-note {
+  font-size: 10px;
+  color: #8b9489;
+  line-height: 1.8;
+}
+.planner-conversation {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid #e1e6dc;
+  border-radius: 18px;
+  background: #fff;
+  overflow: hidden;
+}
+.conversation-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid #edf0e9;
+}
+.conversation-heading > div:nth-child(2) {
+  flex: 1;
+}
+.conversation-heading small {
+  display: block;
+  font-size: 10px;
+  color: #8a9386;
+  margin-top: 4px;
+}
+.avatar {
+  border-radius: 50%;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  background: #edf1e7;
+  color: #758b68;
+}
+.conversation-log {
+  flex: 1;
+  min-height: 180px;
+  overflow: auto;
+  padding: 18px;
+}
+.chat-welcome {
+  padding: 22px 6px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+.chat-welcome h3 {
+  font-size: 20px;
+}
+.planner-message {
+  margin-bottom: 18px;
+  max-width: 95%;
+}
+.planner-message > small {
+  font-size: 10px;
+  color: #8b9489;
+}
+.planner-bubble {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+  font-size: 13px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #f1f4ec;
+  margin-top: 5px;
+}
+.planner-message.user {
+  margin-left: auto;
+}
+.user .planner-bubble {
+  background: #778b69;
+  color: white;
+}
+.action-receipt {
+  white-space: pre-wrap;
+  font-size: 10px;
+  color: #77836b;
+  line-height: 1.6;
+  margin-top: 6px;
+}
+.thinking {
+  font-size: 12px;
+  color: #7f8e73;
+}
+.quick-prompts {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+}
+.quick-prompts button {
+  font-size: 11px;
+  padding: 7px 9px;
+  border-radius: 16px;
+}
+.planner-composer {
+  padding: 12px;
+  border-top: 1px solid #edf0e9;
+}
+.planner-composer textarea {
+  width: 100%;
+  min-height: 78px;
+  max-height: 160px;
+  font-size: 13px;
+  resize: vertical;
+}
+.planner-composer > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 6px 0;
+}
+.planner-composer label {
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.planner-composer input {
+  width: auto;
+}
+.planner-composer small {
+  font-size: 9px;
+  color: #8c9487;
+}
+.chat-preview {
+  max-height: 200px;
+  overflow: auto;
+  padding: 12px;
+  background: #f7f1e2;
+  font-size: 12px;
+}
+.reminder {
+  background: #f5edcf;
+  padding: 10px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+@media (max-width: 1150px) {
+  .planner-grid {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  .agenda {
+    overflow: visible;
+  }
+  .planner-conversation {
+    min-height: 540px;
+  }
+  .conversation-log {
+    max-height: 450px;
+  }
+  .daily-home {
+    padding: 16px;
+  }
+  .planner-header h2 {
+    font-size: 21px;
+  }
+}
+@media (max-width: 500px) {
+  .planner-header {
+    align-items: flex-start;
+  }
+  .day-stats {
+    gap: 9px;
+  }
+  .task-title {
+    flex-wrap: wrap;
+  }
+  .conversation-heading .quiet {
+    font-size: 10px;
+    padding: 6px;
+  }
+  .planner-header p {
+    font-size: 11px;
+  }
 }
 </style>

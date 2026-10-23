@@ -14,7 +14,14 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from "@nestjs/common";
+import {
+  executeCommands,
+  parseChatOutput,
+  plannerMessages,
+  plannerChatSchema,
+} from "./chat-engine";
 import { adapt, weeklyReview } from "./adaptive";
 import { randomUUID } from "node:crypto";
 import { Database } from "../database";
@@ -23,6 +30,7 @@ import { OllamaService } from "../ai/ollama.service";
 import { LocalAiModule } from "../ai/localai.module";
 import {
   AdviceDto,
+  PlannerChatDto,
   EventDto,
   GoalDto,
   MoveDto,
@@ -49,7 +57,17 @@ type Proposal = {
   sessions: Session[];
   unscheduled: string[];
 };
+type PlannerMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  requestId?: string;
+  outcome?: string;
+  proposalId?: string;
+};
 type Stored = State & {
+  chats?: Record<string, PlannerMessage[]>;
   proposal?: Proposal;
   weeklyReport?: { weekKey: string; text: string; generatedAt: string };
 };
@@ -106,6 +124,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
   get() {
     return this.access((s) => ({
       ...s,
+      chats: undefined,
       proposal: undefined,
       weekly: weeklyReview(s),
       weeklyReport:
@@ -368,6 +387,135 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       return s.weeklyReport;
     }, true);
   }
+  history(characterId: string) {
+    return this.access((s) => s.chats?.[characterId] ?? []);
+  }
+  async chat(dto: PlannerChatDto) {
+    if (!validDate(dto.date)) throw new BadRequestException("วันที่ไม่ถูกต้อง");
+    const character = await this.db.character.findUnique({
+      where: { id: dto.characterId },
+    });
+    if (!character) throw new NotFoundException("ไม่พบตัวละคร");
+    const snapshot = await this.access((s) => s);
+    const history = snapshot.chats?.[dto.characterId] ?? [];
+    const previous = history.find(
+      (m) => m.role === "assistant" && m.requestId === dto.requestId,
+    );
+    if (previous)
+      return {
+        message: previous,
+        proposal:
+          snapshot.proposal?.id === previous.proposalId
+            ? snapshot.proposal
+            : undefined,
+      };
+    const memories = await this.db.memory.findMany({
+      where: { characterId: dto.characterId },
+      orderBy: { importance: "desc" },
+      take: 12,
+    });
+    const signal = AbortSignal.timeout(120000),
+      release = await this.gate.acquire(signal);
+    let output;
+    try {
+      const relevant = snapshot.sessions.filter(
+        (s) =>
+          s.date >= dto.date &&
+          s.date <=
+            new Date(Date.parse(dto.date) + 7 * 86400000)
+              .toISOString()
+              .slice(0, 10),
+      );
+      if (relevant.length > 120)
+        throw new BadRequestException(
+          "ตารางช่วงนี้มีมากเกินไป กรุณาจัดการกิจกรรมก่อน",
+        );
+      output = parseChatOutput(
+        await this.ai.plannerCompletion(
+          plannerMessages(
+            character,
+            memories,
+            history,
+            {
+              selectedDate: dto.date,
+              today: today(),
+              now: new Date().toISOString(),
+              timezone: "Asia/Bangkok",
+              settings: snapshot.settings,
+              goals: snapshot.goals,
+              sessions: relevant,
+              weekly: weeklyReview(snapshot),
+            },
+            dto.message,
+          ),
+          plannerChatSchema,
+          signal,
+        ),
+      );
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    } finally {
+      release();
+    }
+    return this.access((s) => {
+      const old = s.chats?.[dto.characterId]?.find(
+        (m) => m.role === "assistant" && m.requestId === dto.requestId,
+      );
+      if (old) return { message: old };
+      if (s.revision !== snapshot.revision)
+        throw new ConflictException("ตารางเปลี่ยนระหว่างคุย กรุณาส่งใหม่");
+      const createdAt = new Date().toISOString();
+      let outcome = "คำตอบจาก " + character.name,
+        proposal: Proposal | undefined;
+      if (output.actions.length) {
+        let result;
+        try {
+          result = executeCommands(s, output.actions, dto.date);
+        } catch (e) {
+          throw new BadRequestException(
+            `${(e as Error).message} — ยังไม่ได้เปลี่ยนตาราง`,
+          );
+        }
+        if (dto.autoApply) {
+          s.sessions = result.sessions;
+          this.changed(s);
+          outcome = "บันทึกตารางแล้ว";
+        } else {
+          proposal = {
+            id: randomUUID(),
+            revision: s.revision,
+            expires: Date.now() + 900000,
+            sessions: result.sessions,
+            unscheduled: result.notices,
+          };
+          s.proposal = proposal;
+          outcome = "รอยืนยันแผน ยังไม่ได้บันทึก";
+        }
+        if (result.notices.length) outcome += "\n" + result.notices.join("\n");
+      }
+      const message: PlannerMessage = {
+        id: randomUUID(),
+        role: "assistant",
+        content: output.reply,
+        createdAt,
+        requestId: dto.requestId,
+        outcome,
+        proposalId: proposal?.id,
+      };
+      s.chats ??= {};
+      s.chats[dto.characterId] = [
+        ...(s.chats[dto.characterId] ?? []),
+        {
+          id: randomUUID(),
+          role: "user" as const,
+          content: dto.message,
+          createdAt,
+        },
+        message,
+      ].slice(-80);
+      return { message, proposal };
+    }, true);
+  }
   async advice(dto: AdviceDto) {
     const state = await this.get();
     const signal = AbortSignal.timeout(120000);
@@ -419,6 +567,12 @@ class PlannerController {
   }
   @Post("weekly-review") weeklyReview() {
     return this.planner.weeklyAnalysis();
+  }
+  @Get("chat") history(@Query("characterId") characterId: string) {
+    return this.planner.history(characterId);
+  }
+  @Post("chat") chat(@Body() dto: PlannerChatDto) {
+    return this.planner.chat(dto);
   }
   @Post("goals") goal(@Body() d: GoalDto) {
     return this.planner.goal(d);

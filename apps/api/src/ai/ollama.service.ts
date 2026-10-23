@@ -33,6 +33,13 @@ export class OllamaService {
       );
     return r;
   }
+  async plannerCompletion(messages: {role:string;content:string}[], schema: object, signal:AbortSignal) {
+    if(localAiEnabled()) return this.localai.plannerCompletion(messages,signal);
+    const response=await this.request({messages,stream:false,format:schema,options:{num_ctx:16384,num_predict:3000,temperature:0.2}},signal);
+    const data=await response.json() as any;
+    if(data.done_reason==='length'||data.done===false||!data.message?.content) throw new Error('คำตอบจากโมเดลไม่ครบ ลองแบ่งคำขอให้สั้นลง');
+    return String(data.message.content);
+  }
   async translateToEnglish(content: string, signal: AbortSignal) {
     if (localAiEnabled()) return this.localai.translateToEnglish(content, signal);
     if (!/[\u0E00-\u0E7F]/.test(content)) return content;
