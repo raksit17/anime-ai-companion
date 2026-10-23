@@ -20,12 +20,18 @@ type Session = {
   status: string;
   fixed: boolean;
 };
+type PlannerFollowUp = {
+  label: string;
+  prompt?: string;
+  openSettings?: boolean;
+};
 type Message = {
   id: string;
   role: string;
   content: string;
   createdAt: string;
   outcome?: string;
+  followUps?: PlannerFollowUp[];
 };
 type Proposal = { id: string; sessions: Session[]; unscheduled: string[] };
 const companion = useChat();
@@ -196,6 +202,14 @@ async function send(text = input.value) {
     await refresh().catch(() => {});
   } finally {
     busy.value = false;
+  }
+}
+function chooseFollowUp(option: PlannerFollowUp) {
+  if (busy.value) return;
+  if (option.openSettings) {
+    advanced.value = true;
+  } else if (option.prompt) {
+    void send(option.prompt);
   }
 }
 async function mark(s: Session, status: string) {
@@ -452,6 +466,17 @@ watch(advanced, (value) => {
             }}</small>
             <div class="planner-bubble">{{ m.content }}</div>
             <div v-if="m.outcome" class="action-receipt">{{ m.outcome }}</div>
+            <div v-if="m.followUps?.length" class="planner-followups">
+              <button
+                v-for="option in m.followUps"
+                :key="option.label"
+                type="button"
+                :disabled="busy"
+                @click="chooseFollowUp(option)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
           </article>
           <div v-if="busy" class="thinking" role="status">
             {{ companion.character?.name || "ยูนะ" }}กำลังดูตารางให้…
@@ -847,6 +872,24 @@ watch(advanced, (value) => {
   color: #77836b;
   line-height: 1.6;
   margin-top: 6px;
+}
+.planner-followups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.planner-followups button {
+  font-size: 11px;
+  border-radius: 16px;
+  padding: 7px 10px;
+  background: #f2f4ed;
+  border: 1px solid #dce4d4;
+  color: #5b7450;
+}
+.planner-followups button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .thinking {
   font-size: 12px;
