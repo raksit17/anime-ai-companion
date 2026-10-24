@@ -177,6 +177,63 @@ export function completeScheduledAdd(
   );
 }
 
+
+/**
+ * Collect explicitly requested NEW activities, never mutate existing session
+ * IDs based on a model's guess. Multi-activity requests with no durations are
+ * proposals only; the planner offers 30/20-minute trial allocations and the
+ * user must approve the actual dates/times before anything is persisted.
+ */
+export function parseMultipleNewTasks(
+  message: string,
+  selected: string,
+  now = Date.now(),
+): { date: string; names: string[]; durations: (number | undefined)[] } | undefined {
+  const source = message.trim();
+  if (!/(?:ช่วย\s*จัดเวลา|ช่วย\s*จัดตาราง|เพิ่ม(?:งาน|กิจกรรม)|ช่วย\s*เพิ่ม)/iu.test(source) ||
+      !/\sและ\s/u.test(source) || /(?:ไหม|หรือเปล่า|\?)/u.test(source))
+    return undefined;
+  // Do not let a batch handler discard exact clocks requested for individual
+  // activities; those require a separate explicit-time interpretation.
+  if (/\d{1,2}:\d{2}/u.test(source)) return undefined;
+  const marker = /(?:ช่วย\s*จัดเวลา|ช่วย\s*จัดตาราง|เพิ่ม(?:งาน|กิจกรรม)?|ช่วย\s*เพิ่ม)\s*/iu;
+  const matched = marker.exec(source);
+  if (!matched) return undefined;
+  let body = source.slice(matched.index + matched[0].length).trim();
+  const relative = source.match(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/u)?.[0];
+  const days = relative === "วันนี้" ? 0 :
+    relative === "พรุ่งนี้" || relative === "พรุ้งนี้" ? 1 :
+      relative?.startsWith("มะรืน") ? 2 : undefined;
+  const date = days === undefined ? selected :
+    new Date(Date.parse(today(now)) + days * 86400000).toISOString().slice(0, 10);
+  if (!validDate(date) || date < today(now)) return undefined;
+  body = body.replace(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu, " ").trim()
+    .replace(/(?:ให้หน่อย|ด้วยนะ|ด้วย|หน่อย|ครับ|ค่ะ)\s*$/u, "").trim();
+  const parts = body.split(/\s+และ\s+/u).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2 || parts.length > 6) return undefined;
+  const names: string[] = [];
+  const durations: (number | undefined)[] = [];
+  for (const part of parts) {
+    const requested = part.match(/(?:ใช้เวลา|นาน|ระยะเวลา|อย่างละ)?\s*(\d{1,3})\s*(นาที|ชั่วโมง)\s*$/u);
+    const duration = requested ? Number(requested[1]) * (requested[2] === "ชั่วโมง" ? 60 : 1) : undefined;
+    if (duration !== undefined && (duration < 5 || duration > 240))
+      return undefined;
+    const name = (requested ? part.slice(0, requested.index) : part)
+      .replace(/^(?:อยาก|ขอ|ช่วย)\s*/u, "")
+      .replace(/^(?:กิจกรรม|งาน)\s*/u, "")
+      .replace(/^ฝึก\s+ติว/u, "ติว")
+      .replace(/^\s*ฝึก\s*devoop\s*$/iu, "ฝึก DevOps")
+      .replace(/\s+/gu, " ").trim();
+    if (!name || name.length > 120 || !/[\p{L}]/u.test(name))
+      return undefined;
+    names.push(name);
+    durations.push(duration);
+  }
+  if (new Set(names.map((name) => name.toLocaleLowerCase())).size !== names.length)
+    return undefined;
+  return { date, names, durations };
+}
+
 export function simpleAddFromMessage(message: string, now = Date.now()): Command | undefined {
   const match = message.trim().match(
     /^(วันนี้|พรุ่งนี้|มะรืน(?:นี้)?)\s*เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?\s*(.+?)\s*(?:อีก\s*)?(\d{1,3})\s*(ชั่วโมง|นาที)\s*(?:ด้วย|หน่อย|นะ|ค่ะ|ครับ)?\s*$/u,

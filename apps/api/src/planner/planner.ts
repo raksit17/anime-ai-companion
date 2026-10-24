@@ -29,6 +29,7 @@ import {
   parseExerciseWithBreaks,
   parseExistingTimeMove,
   parseScheduledAdd,
+  parseMultipleNewTasks,
   completeScheduledAdd,
   simpleAddFromMessage,
   plannerConflictFallback,
@@ -491,6 +492,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let output: ChatOutput;
     let durationEdit: ReturnType<typeof parseDurationEdit>;
     let timedAdd: ReturnType<typeof parseScheduledAdd>;
+    let multipleAdds: ReturnType<typeof parseMultipleNewTasks>;
+    let requireBatchApproval = false;
     let blocked: PlannerConstraint | undefined;
     let capacityPreview: DailyCapacityPreview | undefined;
     try {
@@ -528,7 +531,9 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      timedAdd = durationEdit ? undefined :
+      multipleAdds = durationEdit ? undefined :
+        parseMultipleNewTasks(dto.message, dto.date);
+      timedAdd = durationEdit || multipleAdds ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
       // A clear clock in a scheduling request must never fall through to
@@ -537,7 +542,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         !durationEdit && !timedAdd &&
         /\d{1,2}:\d{2}/u.test(dto.message) &&
         /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน|เลื่อน|ย้าย|ขยับ|เปลี่ยนเวลา/u.test(dto.message);
-      const guided = durationEdit || timedAdd || unparsedClockRequest
+      const guided = durationEdit || timedAdd || multipleAdds || unparsedClockRequest
         ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
       if (durationEdit) {
         if (durationEdit.command) {
@@ -554,6 +559,88 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             reply: `อืม… ${blocked.reason} ค่ะ ยังไม่ได้เปลี่ยนตารางนะ`,
             actions: [],
           };
+        }
+      } else if (multipleAdds) {
+        // Multi-activity planning is always a preview requiring approval,
+        // even when "จัดตารางทันที" is selected. Ollama must not reinterpret
+        // unrelated completed sessions as move/resize/done commands.
+        const plannedNames = new Set(snapshot.sessions
+          .filter((task) => task.date === multipleAdds!.date &&
+            task.status === "planned")
+          .map((task) => task.name.trim().toLocaleLowerCase()));
+        const duplicate = multipleAdds.names.find((name) =>
+          plannedNames.has(name.trim().toLocaleLowerCase()));
+        if (duplicate) {
+          blocked = {
+            reason: "มีงาน " + duplicate + " รอทำอยู่แล้วในวันที่ " +
+              multipleAdds.date + " จึงยังไม่เพิ่มซ้ำ",
+            followUps: [{
+              label: "ดูตารางวันนี้", prompt: "แสดงงานที่ยังรอทำของวันที่เลือก ก่อนเพิ่มรายการซ้ำ",
+            }],
+          };
+          output = { reply: blocked.reason, actions: [] };
+        } else {
+          let preview: ReturnType<typeof executeCommands> | undefined;
+          let candidates: ChatOutput["actions"] = [];
+          let lastFailure = "";
+          // The user did not specify durations for every task. Offer a
+          // manageable draft of 30 minutes each, then 20 if necessary;
+          // never silently shorten an explicitly stated duration.
+          for (const suggested of [30, 20]) {
+            const requested = multipleAdds.names.map((name, i) => ({
+              type: "add" as const, name, date: multipleAdds!.date,
+              duration: multipleAdds!.durations[i] ?? suggested, fixed: false,
+            }));
+            try {
+              const draft = executeCommands(snapshot, requested, dto.date);
+              const added = draft.sessions.filter((item) =>
+                !snapshot.sessions.some((old) => old.id === item.id));
+              if (added.length !== requested.length) continue;
+              // Pin preview times. The validator checks this again during
+              // the transaction, so a late/changed schedule never drifts.
+              candidates = added.map((item) => ({
+                type: "add" as const, name: item.name, date: item.date,
+                start: item.start, duration: item.duration, fixed: false,
+              }));
+              preview = draft;
+              break;
+            } catch (error) {
+              lastFailure = (error as Error).message;
+            }
+          }
+          if (preview) {
+            requireBatchApproval = true;
+            const clock = (minutes: number) =>
+              String(Math.floor(minutes / 60)).padStart(2, "0") +
+              ":" + String(minutes % 60).padStart(2, "0");
+            const added = preview.sessions.filter((item) =>
+              !snapshot.sessions.some((old) => old.id === item.id));
+            output = {
+              reply: "ยูนะลองจัดเวลาให้แล้วนะคะ เป็นแผนตัวอย่างที่ยังไม่บันทึกค่ะ\n" +
+                added.map((item) =>
+                  "• " + item.name + " " + clock(item.start) + "–" +
+                  clock(item.start + item.duration) + " (" + item.duration +
+                  " นาที)").join("\n") +
+                "\nยูนะเว้นเวลาพักตามที่ตั้งไว้แล้ว งานที่ทำเสร็จจะไม่ถูกแก้ค่ะ กดยืนยันแผนก่อนบันทึกนะคะ",
+              actions: candidates,
+            };
+          } else {
+            blocked = {
+              reason: "ยังจัดกิจกรรมใหม่ทั้ง " + multipleAdds.names.length +
+                " รายการในวันที่ " + multipleAdds.date +
+                " พร้อมเวลาพักตามที่ตั้งไว้ไม่ได้ โดยไม่ได้แก้งานเก่า" +
+                (lastFailure ? " · " + lastFailure : ""),
+              followUps: [
+                { label: "ลองจัดวันพรุ่งนี้", prompt:
+                  "พรุ่งนี้ ช่วยจัดเวลา " + multipleAdds.names.join(" และ ") +
+                  " เป็นแผนตัวอย่างก่อนบันทึก" },
+                { label: "เสนอแผนที่สั้นลง", prompt:
+                  "ช่วยเสนอการแบ่ง " + multipleAdds.names.join(" และ ") +
+                  " ให้เหมาะกับเวลาว่าง โดยยังไม่เปลี่ยนตาราง" },
+              ],
+            };
+            output = { reply: blocked.reason, actions: [] };
+          }
         }
       } else if (timedAdd) {
         if (timedAdd.command) {
@@ -884,7 +971,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                 : `ฉันเตรียม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ไว้ให้ตรวจแล้วค่ะ ยังไม่ได้บันทึกจนกว่าเธอจะยืนยันนะ`;
             }
           }
-          if (dto.autoApply) {
+          if (dto.autoApply && !requireBatchApproval) {
             if (changedItems.length) {
               s.sessions = result.sessions;
               this.changed(s);
@@ -903,7 +990,10 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               unscheduled: result.notices,
             };
             s.proposal = proposal;
-            outcome = "รอยืนยันแผน ยังไม่ได้บันทึก";
+            outcome = requireBatchApproval
+              ? "รอยืนยันแผนเพิ่ม " + (multipleAdds?.names.length ?? 0) +
+                " กิจกรรม · ยังไม่ได้บันทึก"
+              : "รอยืนยันแผน ยังไม่ได้บันทึก";
           }
           if (result.notices.length)
             outcome += "\n" + result.notices.join("\n");
