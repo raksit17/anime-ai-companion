@@ -8,6 +8,8 @@ export type Command = {
   name?: string;
   start?: number;
   duration?: number;
+  /** Server-only directive for exact existing-task edits: never reflow other slots. */
+  preserveOtherSlots?: boolean;
   fixed?: boolean;
   energy?: "normal" | "low";
 };
@@ -263,6 +265,74 @@ export function parseExerciseWithBreaks(
       " นาทีก่อนและหลังงานอื่นไม่ได้ จึงยังไม่เปลี่ยนตาราง" };
   return { command: {
     type: "edit", id: task.id, date, start: found, duration: desiredDuration,
+  } };
+}
+
+
+/** A time-only reschedule of an existing task never needs the user to repeat
+ * its duration. Resolve the current session by exact name and calendar date;
+ * no Ollama-generated ID or guessed duration is used to save the change.
+ */
+export function parseExistingTimeMove(
+  state: State,
+  selected: string,
+  message: string,
+  now = Date.now(),
+): { command?: Command; reason?: string } | undefined {
+  let input = message.trim();
+  if (/(?:ไหม|หรือเปล่า|ดีไหม|\?)/u.test(input)) return undefined;
+  const verb = /^(?:ช่วย\s*|ขอ\s*|รบกวน\s*)?(?:เลื่อนเวลา(?:ของ)?|เปลี่ยนเวลา(?:ของ)?|ขยับเวลา(?:ของ)?|เลื่อน|ย้าย|ขยับ|เปลี่ยน)\s*/u;
+  const dates = [...input.matchAll(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu)]
+    .map((m) => m[0].replace("พรุ้งนี้", "พรุ่งนี้"));
+  if (new Set(dates).size > 1)
+    return { reason: "มีวันที่มากกว่าหนึ่งวัน กรุณาระบุวันที่เดียวที่จะเลื่อนกิจกรรม" };
+  const offset = dates[0] === "วันนี้" ? 0 : dates[0] === "พรุ่งนี้" ? 1 :
+    dates[0]?.startsWith("มะรืน") ? 2 : undefined;
+  const absoluteDates = [...input.matchAll(/\b\d{4}-\d{2}-\d{2}\b/gu)];
+  if (absoluteDates.length > 1)
+    return { reason: "มีวันที่มากกว่าหนึ่งวัน กรุณาระบุวันที่เดียว" };
+  const relativeDate = offset === undefined ? undefined :
+    new Date(Date.parse(today(now)) + offset * 86400000).toISOString().slice(0, 10);
+  const date = absoluteDates[0]?.[0] ?? relativeDate ?? selected;
+  input = input.replace(/\b\d{4}-\d{2}-\d{2}\b/gu, " ")
+    .replace(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu, " ").trim();
+  if (!verb.test(input)) {
+    // Also support "Coding เลื่อนไป 22:00" (task name before the verb).
+    const reverse = input.match(
+      /^(.+?)\s*(?:เลื่อนไป|เลื่อน|ย้ายไป|ย้าย|ขยับไป|ขยับ)\s*(\d{1,2}:\d{2})\s*$/u,
+    );
+    if (!reverse) return undefined;
+    input = "เลื่อน" + reverse[1].trim() + " " + reverse[2];
+  }
+  if (relativeDate && absoluteDates[0] && relativeDate !== absoluteDates[0][0])
+    return { reason: "วันที่ที่ระบุไม่ตรงกับคำว่าพรุ่งนี้/วันนี้ กรุณายืนยันวันที่" };
+  const clocks = [...input.matchAll(/(\d{1,2}):(\d{2})/gu)];
+  if (!clocks.length) return undefined;
+  if (clocks.length !== 1)
+    return { reason: "มีเวลาหลายค่า กรุณาระบุเวลาเริ่มใหม่ค่าเดียว" };
+  const hours = Number(clocks[0][1]), minutes = Number(clocks[0][2]);
+  if (!validDate(date) || hours > 23 || minutes > 59)
+    return { reason: "วันที่หรือเวลาเริ่มใหม่ไม่ถูกต้อง" };
+  const start = hours * 60 + minutes;
+  const name = input.replace(verb, "")
+    .replace(clocks[0][0], " ")
+    .replace(/^(?:งาน|กิจกรรม)\s*/u, "")
+    .replace(/\s*(?:ไป|ไปที่|เป็น|เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?|ให้|ที่|น\.?)\s*$/u, "")
+    .trim();
+  const normalize = (value: string) =>
+    value.toLocaleLowerCase().replace(/\s+/gu, "");
+  if (!name)
+    return { reason: "ยังไม่ทราบว่าจะเลื่อนกิจกรรมใด กรุณาระบุชื่อกิจกรรม" };
+  const matching = state.sessions.filter((task) =>
+    task.date === date && normalize(task.name) === normalize(name));
+  if (matching.length !== 1)
+    return { reason: matching.length === 0
+      ? 'ไม่พบกิจกรรม "' + name + '" วันที่ ' + date + " กรุณาเลือกวันหรือชื่อให้ตรงกับตาราง"
+      : 'พบกิจกรรม "' + name + '" มากกว่าหนึ่งรายการ กรุณาระบุสล็อตให้ชัดเจน' };
+  const task = matching[0];
+  return { command: {
+    type: "edit", id: task.id, date, start, duration: task.duration,
+    preserveOtherSlots: true,
   } };
 }
 
@@ -597,10 +667,11 @@ export function explainPlannerConstraint(
     };
   }
   const session =
-    action?.type === "move"
+    action?.type === "move" || action?.type === "edit"
       ? state.sessions.find((s) => s.id === action.id)
       : undefined;
-  if (session && action?.type === "move" && action.start !== undefined) {
+  if (session && (action?.type === "move" || action?.type === "edit") &&
+      action.start !== undefined) {
     const end = action.start + session.duration;
     if (end > state.settings.sleep) {
       return {
@@ -626,6 +697,23 @@ export function explainPlannerConstraint(
         ],
       };
     }
+  }
+  if (session && action?.type === "edit" && action.preserveOtherSlots &&
+      action.start !== undefined) {
+    return {
+      reason: session.name + " วันที่ " + (action.date ?? selected) +
+        " ยังเลื่อนไป " + formatMinutes(action.start) +
+        " ไม่ได้ เพราะต้องเว้นพักอย่างน้อย " +
+        Math.max(15, state.settings.breakMinutes) +
+        " นาทีและไม่ชนงานอื่น โดยตารางเดิมยังไม่เปลี่ยน",
+      followUps: [{
+        label: "เสนอเวลาอื่น",
+        prompt: "ช่วยเสนอเวลาอื่นสำหรับ " + session.name +
+          " วันที่ " + (action.date ?? selected) +
+          " โดยใช้ระยะเวลาเดิม " + session.duration +
+          " นาทีและไม่ย้ายงานอื่น ก่อนให้ฉันเลือก",
+      }],
+    };
   }
   return {
     reason: message,
@@ -851,13 +939,20 @@ export function executeCommands(
             timestamp(x.date, x.start) < now)),
       };
       if (!fits(locked, edited, now))
-        throw new Error("เวลาที่ขอชนกิจกรรมล็อกไว้ เวลาพัก เวลานอน หรือเพดานรายวัน");
+        throw new Error(a.preserveOtherSlots
+          ? "เลื่อนไป " + formatMinutes(a.start!) +
+            " ไม่ได้ เพราะชนกิจกรรมที่ล็อกไว้ เวลาพัก เวลานอน หรือขีดจำกัด"
+          : "เวลาที่ขอชนกิจกรรมล็อกไว้ เวลาพัก เวลานอน หรือเพดานรายวัน");
       // If the requested slot already fits the full schedule, retain every
       // other activity and apply the targeted edit without adaptive reflow.
       if (fits(state, edited, now)) {
         Object.assign(s, edited);
         continue;
       }
+      if (a.preserveOtherSlots)
+        throw new Error(
+          "เลื่อนไป " + formatMinutes(a.start!) + " ไม่ได้ เพราะชนกิจกรรมอื่น เวลาพัก เวลาเข้านอน หรือขีดจำกัด โดยยังไม่ได้ย้ายงานอื่น",
+        );
       Object.assign(s, edited, { fixed: true });
       const reflow = adapt(state, date, "normal", undefined, now, 1);
       const anchored = reflow.sessions.find((x) => x.id === s.id);
