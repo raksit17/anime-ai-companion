@@ -234,6 +234,138 @@ export function parseMultipleNewTasks(
   return { date, names, durations };
 }
 
+
+export type GroupShiftPlan = {
+  actions?: Command[];
+  names?: string[];
+  date?: string;
+  reason?: string;
+};
+
+/**
+ * Shift a suggested multi-activity plan as a BLOCK, retaining each task's
+ * actual name, order, duration and the configured rest gaps.
+ * Accept both a follow-up to a pending proposal and a pasted preview, e.g.
+ * "• TOEIC 17:30–18:00 (30 นาที)\n... ย้ายไปที่ เริ่ม ตั้งแต่ 2 ทุ่ม".
+ * A pending proposal is never committed without a fresh preview/confirmation.
+ */
+export function parseGroupShiftPlan(
+  state: State,
+  selected: string,
+  message: string,
+  pendingSessions: Session[] = [],
+  recentProposalText = "",
+  now = Date.now(),
+): GroupShiftPlan | undefined {
+  const bullet = /^\s*[•*-]\s*(.+?)\s+(\d{1,2}):(\d{2})\s*[–—-]\s*(\d{1,2}):(\d{2})\s*\(\s*(\d{1,3})\s*นาที\s*\)\s*$/u;
+  const lines = message.trim().split(/\r?\n/u);
+  const quoted = lines.map((line) => line.match(bullet)).filter(
+    (match): match is RegExpMatchArray => match !== null,
+  );
+  const instruction = lines.filter((line) => !bullet.test(line)).join(" ").trim();
+  if (!/(?:ย้าย|เลื่อน|ขยับ|เริ่มตั้งแต่|เริ่มเวลา)/u.test(instruction))
+    return undefined;
+  // A single existing-slot move must never be intercepted by the group
+  // handler. Require an actual batch source or an explicit reference to the
+  // whole prior plan, even if the message includes a clock.
+  const refersToGroup = /(?:ทั้งชุด|ทั้งหมด|ทั้งสาม|แผน(?:เดิม|นี้)|เริ่ม\s*ตั้งแต่|ย้ายไปที่\s*เริ่ม)/u.test(instruction);
+  if (quoted.length < 2 && pendingSessions.length < 2 &&
+      !recentProposalText && !refersToGroup)
+    return undefined;
+  const clock = instruction.match(/(?:^|[^\d])(\d{1,2}):(\d{2})(?!\d)/u);
+  const evening = instruction.match(/([1-5])\s*ทุ่ม/u);
+  const wordEvening = /สอง\s*ทุ่ม/u.test(instruction);
+  if (!clock && !evening && !wordEvening) return undefined;
+  const start = clock ? Number(clock[1]) * 60 + Number(clock[2]) :
+    evening ? (18 + Number(evening[1])) * 60 : 1200;
+  if (start > 1439 || clock && Number(clock[2]) > 59)
+    return { reason: "เวลาเริ่มใหม่ไม่ถูกต้อง กรุณาระบุเวลาอีกครั้ง" };
+  // Refuse multiple competing instructions rather than guessing a start time.
+  if ([...instruction.matchAll(/\d{1,2}:\d{2}|[1-5]\s*ทุ่ม|สอง\s*ทุ่ม/gu)].length > 1)
+    return { reason: "พบเวลาเริ่มใหม่มากกว่าหนึ่งค่า กรุณาเลือกเวลาเดียว" };
+
+  type Entry = { name: string; duration: number; start: number };
+  const decode = (matches: RegExpMatchArray[]): Entry[] | undefined => {
+    const items: Entry[] = [];
+    for (const match of matches) {
+      const begin = Number(match[2]) * 60 + Number(match[3]);
+      const end = Number(match[4]) * 60 + Number(match[5]);
+      const duration = Number(match[6]);
+      const cleaned = match[1]
+        .replace(/\s*;\s*ตอน(?:กลางคืน|เย็น|บ่าย)ที่\s*$/u, "")
+        .replace(/devoop/giu, "DevOps").trim();
+      if (!cleaned || cleaned.length > 120 ||
+        Number(match[3]) > 59 || Number(match[5]) > 59 ||
+        begin >= end || end > 1440 ||
+        duration < 5 || duration > 240 || end - begin !== duration)
+        return undefined;
+      items.push({ name: cleaned, duration, start: begin });
+    }
+    return items.length >= 2 && items.length <= 6 ? items : undefined;
+  };
+  const namedQuoted = quoted.length ? decode(quoted) : undefined;
+  if (quoted.length && !namedQuoted)
+    return { reason: "ช่วงเวลาในแผนที่คัดลอกไม่ตรงกับระยะเวลาของกิจกรรม กรุณาตรวจข้อความอีกครั้ง" };
+  const pending = pendingSessions.map((item) => ({
+    name: item.name, duration: item.duration, start: item.start,
+  })).sort((a, b) => a.start - b.start);
+  // Only treat a previous Yuna answer as a plan when it actually supplied
+  // parsable per-task slots. Never use arbitrary prose or saved history.
+  const oldSuggested = decode(
+    recentProposalText.split(/\r?\n/u).map((line) => line.match(bullet))
+      .filter((match): match is RegExpMatchArray => match !== null),
+  );
+  let source: Entry[];
+  if (pending.length >= 2 && pending.length <= 6) {
+    if (namedQuoted && (
+      pending.length !== namedQuoted.length ||
+      pending.some((item, i) =>
+        item.duration !== namedQuoted[i].duration ||
+        item.start !== namedQuoted[i].start)
+    )) return { reason: "ข้อความที่คัดลอกไม่ตรงกับแผนที่รอยืนยัน กรุณาสร้างแผนใหม่ก่อน" };
+    source = pending;
+  } else if (namedQuoted) source = namedQuoted;
+  else if (oldSuggested) source = oldSuggested;
+  else return {
+    reason: "ยูนะยังไม่พบแผนหลายกิจกรรมที่ต้องการย้าย กรุณาส่งรายชื่อและระยะเวลา หรือขอจัดแผนใหม่",
+  };
+  const knownDate = pendingSessions.length ? pendingSessions[0].date : selected;
+  if (pendingSessions.some((item) => item.date !== knownDate))
+    return { reason: "แผนนี้มีมากกว่าหนึ่งวัน กรุณาเลือกวันเดียวก่อนเลื่อนเวลา" };
+  const explicitDate = instruction.match(/\b\d{4}-\d{2}-\d{2}\b/u)?.[0];
+  const date = explicitDate ?? knownDate;
+  if (!validDate(date) || date < today(now) ||
+      (explicitDate && pendingSessions.length && explicitDate !== knownDate))
+    return { reason: "วันที่ที่ขอไม่ตรงกับวันที่ของแผน กรุณายืนยันวันที่ก่อน" };
+  const names = source.map((item) => item.name);
+  const lower = (name: string) => name.trim().toLocaleLowerCase();
+  if (new Set(names.map(lower)).size !== names.length ||
+      names.some((name) => state.sessions.some((item) =>
+        item.date === date && item.status !== "skipped" &&
+        lower(item.name) === lower(name))))
+    return { reason: "กิจกรรมบางรายการมีอยู่ในตารางจริงแล้ว กรุณาเลื่อนสล็อตเดิมแทนการเพิ่มซ้ำ" };
+  const breakMinutes = Math.max(15, state.settings.breakMinutes);
+  let cursor = start;
+  const actions: Command[] = source.map((item) => {
+    const action: Command = {
+      type: "add", name: item.name, date, start: cursor,
+      duration: item.duration, fixed: false,
+    };
+    cursor += item.duration + breakMinutes;
+    return action;
+  });
+  const last = actions[actions.length - 1];
+  if (last.start! + last.duration! > state.settings.sleep)
+    return {
+      reason: "หากเริ่ม " + formatMinutes(start) +
+        " แผนทั้งหมดจะจบ " + formatMinutes(last.start! + last.duration!) +
+        " ซึ่งเกินเวลาเข้านอน " + formatMinutes(state.settings.sleep) +
+        " กรุณาเริ่มให้เร็วขึ้นหรือลดเวลาบางกิจกรรมก่อน",
+      names, date,
+    };
+  return { actions, names, date };
+}
+
 export function simpleAddFromMessage(message: string, now = Date.now()): Command | undefined {
   const match = message.trim().match(
     /^(วันนี้|พรุ่งนี้|มะรืน(?:นี้)?)\s*เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?\s*(.+?)\s*(?:อีก\s*)?(\d{1,3})\s*(ชั่วโมง|นาที)\s*(?:ด้วย|หน่อย|นะ|ค่ะ|ครับ)?\s*$/u,

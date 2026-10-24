@@ -30,6 +30,7 @@ import {
   parseExistingTimeMove,
   parseScheduledAdd,
   parseMultipleNewTasks,
+  parseGroupShiftPlan,
   completeScheduledAdd,
   simpleAddFromMessage,
   plannerConflictFallback,
@@ -493,7 +494,9 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let durationEdit: ReturnType<typeof parseDurationEdit>;
     let timedAdd: ReturnType<typeof parseScheduledAdd>;
     let multipleAdds: ReturnType<typeof parseMultipleNewTasks>;
+    let shiftedBatch: ReturnType<typeof parseGroupShiftPlan>;
     let requireBatchApproval = false;
+    let batchApprovalCount = 0;
     let blocked: PlannerConstraint | undefined;
     let capacityPreview: DailyCapacityPreview | undefined;
     try {
@@ -526,25 +529,94 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         },
         dto.message,
       );
-      durationEdit = parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
+      const latestReply = history.at(-1);
+      const pendingProposal = snapshot.proposal &&
+        snapshot.proposal.expires > Date.now() &&
+        snapshot.proposal.revision === snapshot.revision &&
+        !snapshot.proposal.capacityOverride &&
+        latestReply?.role === "assistant" &&
+        latestReply.proposalId === snapshot.proposal.id
+          ? snapshot.proposal.sessions.filter((task) =>
+              !snapshot.sessions.some((previous) => previous.id === task.id))
+          : [];
+      shiftedBatch = parseGroupShiftPlan(
+        snapshot, dto.date, dto.message, pendingProposal,
+        latestReply?.role === "assistant" &&
+          latestReply.outcome?.startsWith("รอยืนยันแผนเพิ่ม")
+          ? latestReply.content : "",
+      );
+      durationEdit = shiftedBatch ? undefined :
+        parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
         parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      multipleAdds = durationEdit ? undefined :
+      multipleAdds = durationEdit || shiftedBatch ? undefined :
         parseMultipleNewTasks(dto.message, dto.date);
-      timedAdd = durationEdit || multipleAdds ? undefined :
+      timedAdd = durationEdit || multipleAdds || shiftedBatch ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
       const unparsedClockRequest =
-        !durationEdit && !timedAdd &&
+        !durationEdit && !timedAdd && !shiftedBatch &&
         /\d{1,2}:\d{2}/u.test(dto.message) &&
         /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน|เลื่อน|ย้าย|ขยับ|เปลี่ยนเวลา/u.test(dto.message);
-      const guided = durationEdit || timedAdd || multipleAdds || unparsedClockRequest
+      const guided = durationEdit || timedAdd || multipleAdds || shiftedBatch || unparsedClockRequest
         ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
-      if (durationEdit) {
+      if (shiftedBatch) {
+        if (shiftedBatch.actions?.length) {
+          try {
+            const check = executeCommands(snapshot, shiftedBatch.actions, dto.date);
+            const added = check.sessions.filter((task) =>
+              !snapshot.sessions.some((previous) => previous.id === task.id));
+            if (added.length !== shiftedBatch.actions.length ||
+                snapshot.sessions.some((before) =>
+                  !check.sessions.some((after) =>
+                    before.id === after.id &&
+                    before.date === after.date &&
+                    before.start === after.start &&
+                    before.duration === after.duration &&
+                    before.status === after.status)))
+              throw new Error("แผนที่จะย้ายกระทบงานเดิม จึงยังไม่บันทึก");
+            requireBatchApproval = true;
+            batchApprovalCount = added.length;
+            const clock = (minutes: number) =>
+              String(Math.floor(minutes / 60)).padStart(2, "0") +
+              ":" + String(minutes % 60).padStart(2, "0");
+            output = {
+              reply: "ได้เลยค่ะ ยูนะจัดแผนชุดเดิมให้เริ่มเวลา " +
+                clock(shiftedBatch.actions[0].start!) +
+                " ตามที่ขอแล้วนะคะ แสดงตัวอย่างใหม่ก่อนบันทึกค่ะ\n" +
+                added.map((task) => "• " + task.name + " " +
+                  clock(task.start) + "–" +
+                  clock(task.start + task.duration) +
+                  " (" + task.duration + " นาที)").join("\n") +
+                "\nมีเวลาพักตามที่ตั้งไว้ งานที่ทำเสร็จจะไม่ถูกเปลี่ยนค่ะ กดยืนยันแผนใหม่ก่อนบันทึกนะคะ",
+              actions: shiftedBatch.actions,
+            };
+          } catch (error) {
+            blocked = {
+              reason: "ยังย้ายแผนทั้งชุดตามเวลาที่ขอไม่ได้: " +
+                (error as Error).message +
+                " ไม่มีการเปลี่ยนกิจกรรมเดิม",
+              followUps: [{
+                label: "เลือกเวลาอื่น",
+                prompt: "ช่วยเสนอเวลาเริ่มอื่นสำหรับแผนสามกิจกรรม โดยเว้นพักและไม่ชนงานเดิม ก่อนให้ฉันยืนยัน",
+              }],
+            };
+            output = { reply: "อืม… " + blocked.reason + " ค่ะ", actions: [] };
+          }
+        } else {
+          blocked = {
+            reason: shiftedBatch.reason ?? "ยังแยกแผนที่ต้องการย้ายไม่ได้",
+            followUps: [{
+              label: "ขอแผนใหม่", prompt: "ช่วยเสนอแผน TOEIC ฝึกฟังอังกฤษ และ DevOps พร้อมเวลาพัก โดยยังไม่บันทึก",
+            }],
+          };
+          output = { reply: "อืม… " + blocked.reason + " ค่ะ", actions: [] };
+        }
+      } else if (durationEdit) {
         if (durationEdit.command) {
           // An explicit duration request edits the existing session, not a new task.
           output = { reply: "ฉันจะตรวจเวลาของกิจกรรมเดิมและปรับตามที่ขอนะคะ", actions: [durationEdit.command] };
@@ -615,6 +687,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               ":" + String(minutes % 60).padStart(2, "0");
             const added = preview.sessions.filter((item) =>
               !snapshot.sessions.some((old) => old.id === item.id));
+            batchApprovalCount = added.length;
             output = {
               reply: "ยูนะลองจัดเวลาให้แล้วนะคะ เป็นแผนตัวอย่างที่ยังไม่บันทึกค่ะ\n" +
                 added.map((item) =>
@@ -991,7 +1064,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             };
             s.proposal = proposal;
             outcome = requireBatchApproval
-              ? "รอยืนยันแผนเพิ่ม " + (multipleAdds?.names.length ?? 0) +
+              ? "รอยืนยันแผนเพิ่ม " + batchApprovalCount +
                 " กิจกรรม · ยังไม่ได้บันทึก"
               : "รอยืนยันแผน ยังไม่ได้บันทึก";
           }

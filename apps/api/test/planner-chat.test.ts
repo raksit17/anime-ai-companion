@@ -8,6 +8,7 @@ import {
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
   parseMultipleNewTasks,
+  parseGroupShiftPlan,
   parseScheduledAdd,
   completeScheduledAdd,
   parseDurationEdit,
@@ -1705,4 +1706,145 @@ test("multi-add with no feasible slots reports a conflict, not 'กิจกร�
   assert.doesNotMatch(result.message.content, /กิจกรรมนี้บันทึกผลแล้ว/);
   assert.equal(result.proposal, undefined);
   assert.equal((await p.get()).sessions.length, 3);
+});
+
+const quotedEveningRequest = [
+  "• ติวสอบ TOEIC (Test of English for International Communication) 17:30–18:00 (30 นาที)",
+  "• ฝึกฟังภาษาอังกฤษจาก youtube 18:15–18:45 (30 นาที)",
+  "• ฝึก devoop ; ตอนกลางคืนที่ 19:00–19:30 (30 นาที)",
+  "ย้ายไปที่ เริ่ม ตั้งแต่ 2 ทุ่ม",
+].join("\n");
+
+test("pasted draft with three old slots can be shifted to 20:00 preserving 15-minute breaks", () => {
+  const state = completedDayForLearning();
+  const shifted = parseGroupShiftPlan(state, future, quotedEveningRequest);
+  assert.deepEqual(shifted?.actions?.map((x) => ({
+    name: x.name, start: x.start, duration: x.duration, date: x.date,
+  })), [
+    { name: "ติวสอบ TOEIC (Test of English for International Communication)",
+      start: 1200, duration: 30, date: future },
+    { name: "ฝึกฟังภาษาอังกฤษจาก youtube",
+      start: 1245, duration: 30, date: future },
+    { name: "ฝึก DevOps",
+      start: 1290, duration: 30, date: future },
+  ]);
+  const result = executeCommands(state, shifted!.actions!, future);
+  assert.equal(result.sessions.length, 6);
+  assert.deepEqual(result.sessions.slice(0, 3), state.sessions);
+  assert.deepEqual(result.sessions.slice(3).map((x) => x.start),
+    [1200, 1245, 1290]);
+  assert.equal(result.sessions[5].start + result.sessions[5].duration, 1320);
+});
+
+test("follow-up to pending plan uses proposal task names and durations instead of guessing", () => {
+  const state = completedDayForLearning();
+  const pending = [
+    { name: "ติวสอบ TOEIC", start: 1035, duration: 30 },
+    { name: "ฝึกฟังภาษาอังกฤษ YouTube", start: 1095, duration: 30 },
+    { name: "ฝึก DevOps", start: 1140, duration: 30 },
+  ].map((x, index) => ({
+    ...x, id: "draft-" + index, date: future,
+    goalId: "daily:draft-" + index, status: "planned" as const,
+    fixed: false, reminder: 10,
+  }));
+  const onlyShift = parseGroupShiftPlan(
+    state, future, "ย้ายไปเริ่มตั้งแต่ 2 ทุ่ม", pending,
+  );
+  assert.deepEqual(onlyShift?.actions?.map((x) => x.start),
+    [1200, 1245, 1290]);
+  assert.deepEqual(onlyShift?.actions?.map((x) => x.name),
+    pending.map((x) => x.name));
+  assert.match(parseGroupShiftPlan(state, future,
+    quotedEveningRequest, pending)?.reason ?? "", /ไม่ตรงกับแผน/);
+});
+
+test("shifted multi-task group refuses invalid rest, past bedtime or existing named tasks", () => {
+  const state = completedDayForLearning();
+  state.settings.sleep = 1290;
+  assert.match(parseGroupShiftPlan(state, future, quotedEveningRequest)
+    ?.reason ?? "", /เกินเวลาเข้านอน/);
+  const duplicate = completedDayForLearning();
+  duplicate.sessions.push({
+    id: "existing-toeic", name: "ติวสอบ TOEIC (Test of English for International Communication)",
+    start: 1110, duration: 30, date: future, fixed: false,
+    status: "planned", reminder: 10,
+  });
+  assert.match(parseGroupShiftPlan(duplicate, future, quotedEveningRequest)
+    ?.reason ?? "", /มีอยู่ในตารางจริง/);
+  assert.match(parseGroupShiftPlan(completedDayForLearning(), future,
+    "ย้ายไปเริ่มตั้งแต่ 2 ทุ่ม")?.reason ?? "", /ยังไม่พบแผน/);
+  assert.equal(parseGroupShiftPlan(completedDayForLearning(), future,
+    "อยากให้ลองจัด TOEIC ไหม?"), undefined);
+});
+
+test("Yuna replaces a prior proposal with an 8pm multi-task preview and confirms it safely", async () => {
+  const original = completedDayForLearning();
+  const { p, ai } = fixture(original);
+  ai.plannerCompletion = async () => {
+    throw new Error("pending multi-task shift should not need Ollama to invent task IDs");
+  };
+  const first = await p.chat({
+    ...dto, requestId: "initial-three-slot-proposal",
+    message: threeNewLearningRequest, autoApply: true,
+  });
+  assert.ok(first.proposal);
+  assert.equal((await p.get()).sessions.length, 3);
+  const shifted = await p.chat({
+    ...dto, requestId: "move-group-to-20",
+    message: "ย้ายไปที่ เริ่ม ตั้งแต่ 2 ทุ่ม", autoApply: true,
+  });
+  assert.match(shifted.message.outcome ?? "", /รอยืนยันแผนเพิ่ม 3 กิจกรรม/);
+  assert.match(shifted.message.content, /20:00–20:30/);
+  assert.match(shifted.message.content, /20:45–21:15/);
+  assert.match(shifted.message.content, /21:30–22:00/);
+  assert.ok(shifted.proposal);
+  assert.notEqual(shifted.proposal!.id, first.proposal!.id);
+  assert.deepEqual((await p.get()).sessions, original.sessions);
+  const retry = await p.chat({
+    ...dto, requestId: "move-group-to-20",
+    message: "ย้ายไปที่ เริ่ม ตั้งแต่ 2 ทุ่ม", autoApply: true,
+  });
+  assert.equal(retry.message.id, shifted.message.id);
+  await p.confirm(shifted.proposal!.id);
+  const saved = await p.get();
+  assert.deepEqual(saved.sessions.slice(0, 3), original.sessions);
+  assert.deepEqual(saved.sessions.slice(3).map((x: any) => x.start),
+    [1200, 1245, 1290]);
+  assert.equal(saved.sessions.length, 6);
+});
+
+test("copied multi-activity plan builds a preview without an active proposal", async () => {
+  const original = completedDayForLearning();
+  const { p, ai } = fixture(original);
+  ai.plannerCompletion = async () => {
+    throw new Error("quoted group shift must not be parsed as a single add");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "quoted-three-slot-evening",
+    message: quotedEveningRequest,
+  });
+  assert.ok(response.proposal);
+  assert.match(response.message.outcome ?? "", /รอยืนยันแผนเพิ่ม 3 กิจกรรม/);
+  assert.equal(response.proposal!.sessions.length, 6);
+  assert.equal((await p.get()).sessions.length, 3);
+});
+
+test("multi-task group collision returns a truthful refusal without changing completed tasks", async () => {
+  const state = completedDayForLearning();
+  state.sessions.push({
+    id: "reserved", name: "นัดคงที่", date: future, start: 1245,
+    duration: 30, fixed: true, status: "planned", reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("group shift conflict must not fall through to Ollama");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "conflicted-group-shift",
+    message: quotedEveningRequest,
+  });
+  assert.match(response.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(response.message.content, /ยังย้ายแผนทั้งชุด/);
+  assert.equal(response.proposal, undefined);
+  assert.deepEqual((await p.get()).sessions, state.sessions);
 });
