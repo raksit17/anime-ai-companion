@@ -745,7 +745,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                   : "ยูนะตรวจตารางจริงแล้วและจัดช่วงเวลาที่ไม่ชนกิจกรรมเดิมให้ค่ะ") +
                 " เป็นแผนตัวอย่างที่ยังไม่บันทึกนะคะ" +
                 (multipleAdds.durations.some((duration) => duration === undefined)
-                  ? " สำหรับงานที่ไม่ได้บอกระยะเวลา ยูนะขอเสนอเริ่มต้นที่ " + suggested + " นาทีค่ะ" : "") + "\n" +
+                  ? " สำหรับงานที่ไม่ได้บอกระยะเวลา ยูนะขอเสนอระยะเวลาตามตัวอย่างด้านล่างค่ะ" : "") + "\n" +
                 added.map((item) =>
                   "• " + item.name + " " + clock(item.start) + "–" +
                   clock(item.start + item.duration) + " (" + item.duration +
