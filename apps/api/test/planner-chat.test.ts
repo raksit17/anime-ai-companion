@@ -1739,7 +1739,7 @@ test("pasted draft with three old slots can be shifted to 20:00 preserving 15-mi
 test("follow-up to pending plan uses proposal task names and durations instead of guessing", () => {
   const state = completedDayForLearning();
   const pending = [
-    { name: "ติวสอบ TOEIC", start: 1050, duration: 30 },
+    { name: "ติวสอบ TOEIC", start: 1035, duration: 30 },
     { name: "ฝึกฟังภาษาอังกฤษ YouTube", start: 1095, duration: 30 },
     { name: "ฝึก DevOps", start: 1140, duration: 30 },
   ].map((x, index) => ({
