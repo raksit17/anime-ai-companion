@@ -682,12 +682,12 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           }
           if (preview) {
             requireBatchApproval = true;
-            batchApprovalCount = added.length;
             const clock = (minutes: number) =>
               String(Math.floor(minutes / 60)).padStart(2, "0") +
               ":" + String(minutes % 60).padStart(2, "0");
             const added = preview.sessions.filter((item) =>
               !snapshot.sessions.some((old) => old.id === item.id));
+            batchApprovalCount = added.length;
             output = {
               reply: "ยูนะลองจัดเวลาให้แล้วนะคะ เป็นแผนตัวอย่างที่ยังไม่บันทึกค่ะ\n" +
                 added.map((item) =>
