@@ -282,7 +282,7 @@ test("sleep-window rejection becomes a normal companion chat with choices and no
     message: "Coding เลื่อนไป 22:00",
   };
   const reply = await p.chat(request);
-  assert.match(reply.message.content, /ยังไม่ได้ย้าย/);
+  assert.match(reply.message.content, /ยังไม่ได้เปลี่ยนตาราง/);
   assert.match(reply.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
   assert.ok(reply.message.followUps?.some((f: any) => f.openSettings));
   assert.ok(reply.message.followUps?.some((f: any) => f.prompt));
@@ -290,7 +290,9 @@ test("sleep-window rejection becomes a normal companion chat with choices and no
   assert.equal((await p.get()).sessions[0].start, 16 * 60 + 45);
   assert.equal((await p.history("yuna")).length, 2);
   assert.equal((await p.chat(request)).message.id, reply.message.id);
-  assert.equal(calls, 2);
+  // The date, target and original duration are now resolved deterministically;
+  // the model must not need to invent or repair this exact-time move.
+  assert.equal(calls, 0);
 });
 
 test("recovery-model failure falls back to a safe reply even with preview enabled", async () => {
@@ -1149,11 +1151,14 @@ test("explicit-time add must never fall back to the first free morning slot", ()
   assert.equal(flexible.sessions[1].start, 480);
 });
 
+const runtimeTomorrow = new Date(Date.parse(today()) + 86400000)
+  .toISOString().slice(0, 10);
+
 test("chat commits exact 15:00–16:00 task and reports its validated receipt", async () => {
   const seed = initial();
   seed.settings.maxMinutes = 720;
   seed.sessions.push({
-    id: "preceding", name: "Anime AI Companion", date: tomorrowOfScreenshot,
+    id: "preceding", name: "Anime AI Companion", date: runtimeTomorrow,
     start: 825, duration: 60, fixed: false, status: "planned", reminder: 10,
   });
   const { p, ai } = fixture(seed);
@@ -1161,8 +1166,8 @@ test("chat commits exact 15:00–16:00 task and reports its validated receipt", 
   const request = {
     ...dto,
     requestId: "strict-15:00",
-    date: "2026-10-23",
-    message: "พรุ่งนี้ 24 ตุลาคม เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที ลงในตารางจริง",
+    date: today(),
+    message: `พรุ่งนี้ ${runtimeTomorrow} เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที ลงในตารางจริง`,
   };
   // Chat parses tomorrow relative to the actual clock, not the 2030 test fixture clock.
   const response = await p.chat(request);
@@ -1171,7 +1176,7 @@ test("chat commits exact 15:00–16:00 task and reports its validated receipt", 
   assert.equal(response.message.appliedChanges.length, 1);
   assert.equal(response.message.appliedChanges[0].start, 900);
   assert.equal(response.message.appliedChanges[0].duration, 60);
-  assert.equal(response.message.appliedChanges[0].date, tomorrowOfScreenshot);
+  assert.equal(response.message.appliedChanges[0].date, runtimeTomorrow);
   assert.equal((await p.get()).sessions.find((x: any) => x.name === "ฝึก Code").start, 900);
   assert.equal((await p.chat(request)).message.id, response.message.id);
   assert.equal((await p.get()).sessions.length, 2);
@@ -1181,14 +1186,14 @@ test("exact-time conflict is a conversation rejection, never silently saves anot
   const seed = initial();
   seed.settings.maxMinutes = 720;
   seed.sessions.push({
-    id: "busy", name: "Afternoon appointment", date: tomorrowOfScreenshot,
+    id: "busy", name: "Afternoon appointment", date: runtimeTomorrow,
     start: 900, duration: 60, fixed: true, status: "planned", reminder: 10,
   });
   const { p, ai } = fixture(seed);
   ai.plannerCompletion = async () => { throw new Error("explicit add should not need model"); };
   const reply = await p.chat({
-    ...dto, date: "2026-10-23", requestId: "conflicted-15",
-    message: "พรุ่งนี้ 24 ตุลาคม เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที",
+    ...dto, date: today(), requestId: "conflicted-15",
+    message: `พรุ่งนี้ ${runtimeTomorrow} เพิ่มกิจกรรมฝึก Code เวลา 15:00–16:00 ระยะเวลา 60 นาที`,
   });
   assert.match(reply.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
   assert.match(reply.message.content, /15:00/);
@@ -1201,7 +1206,7 @@ test("missing duration asks a follow-up rather than claiming to have saved an ac
   const { p, ai } = fixture();
   ai.plannerCompletion = async () => { throw new Error("missing duration must bypass the model"); };
   const reply = await p.chat({
-    ...dto, date: "2026-10-23", requestId: "duration-not-given",
+    ...dto, date: today(), requestId: "duration-not-given",
     message: "ฝึก code ช่วงบ่าย 15:00 พรุ่งนี้",
   });
   assert.match(reply.message.content, /นานกี่นาที/);
@@ -1231,18 +1236,18 @@ test("exact-time request with missing duration may be completed through the next
     throw new Error("duration follow-up must preserve the original exact time");
   };
   const first = await p.chat({
-    ...dto, date: "2026-10-23", requestId: "needs-duration",
+    ...dto, date: today(), requestId: "needs-duration",
     message: "ฝึก code ช่วงบ่าย 15:00 พรุ่งนี้",
   });
   assert.match(first.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
   const second = await p.chat({
-    ...dto, date: "2026-10-23", requestId: "provided-duration",
+    ...dto, date: today(), requestId: "provided-duration",
     message: "60 นาที",
   });
   assert.equal(second.message.outcome, "บันทึกตารางแล้ว");
   assert.equal(second.message.appliedChanges?.[0]?.start, 900);
   assert.equal(second.message.appliedChanges?.[0]?.duration, 60);
-  assert.equal(second.message.appliedChanges?.[0]?.date, tomorrowOfScreenshot);
+  assert.equal(second.message.appliedChanges?.[0]?.date, runtimeTomorrow);
 });
 
 function tomorrowWorkday() {
