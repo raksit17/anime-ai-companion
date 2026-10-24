@@ -7,6 +7,7 @@ import {
   parseChatOutput,
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
+  parseMultipleNewTasks,
   parseScheduledAdd,
   completeScheduledAdd,
   parseDurationEdit,
@@ -1607,4 +1608,101 @@ test("chat rejects a conflicting time-only move without saving or hiding origina
   assert.match(result.message.content, /16:00/);
   assert.equal(result.message.appliedChanges, undefined);
   assert.equal((await p.get()).sessions.find((x: any) => x.id === "code")?.start, 900);
+});
+
+const threeNewLearningRequest =
+  "okey ช่วยจัดเวลา ฝึก ติวสอบ TOEIC (Test of English for International Communication) และ ฝึกฟังภาษาอังกฤษจาก youtube และ ฝึก devoop";
+
+function completedDayForLearning(date = future, limit = 720) {
+  const state = initial();
+  state.settings.maxMinutes = limit;
+  state.sessions = [
+    { id: "old-clean", name: "ทำความสะอาดห้อง", start: 550, duration: 30 },
+    { id: "old-job", name: "หางาน", start: 675, duration: 30 },
+    { id: "old-code", name: "ฝึก code", start: 900, duration: 60 },
+  ].map((task) => ({
+    ...task, date, goalId: "daily:" + task.id,
+    status: "done" as const, fixed: false, reminder: 10,
+  }));
+  return state;
+}
+
+test("three new learning tasks are classified as ADD not modification of completed work", () => {
+  const parsed = parseMultipleNewTasks(threeNewLearningRequest, future);
+  assert.equal(parsed?.date, future);
+  assert.deepEqual(parsed?.names, [
+    "ติวสอบ TOEIC (Test of English for International Communication)",
+    "ฝึกฟังภาษาอังกฤษจาก youtube",
+    "ฝึก DevOps",
+  ]);
+  assert.deepEqual(parsed?.durations, [undefined, undefined, undefined]);
+  assert.equal(parseMultipleNewTasks("วันนี้เหลืออะไรบ้าง", future), undefined);
+  assert.equal(parseMultipleNewTasks("ช่วยจัดเวลา ติว TOEIC", future), undefined);
+});
+
+test("multiple new tasks require confirmation and preserve every completed session", async () => {
+  const old = completedDayForLearning();
+  const { p, ai } = fixture(old);
+  ai.plannerCompletion = async () => {
+    throw new Error("clear multi-add intent must not touch existing completed IDs");
+  };
+  const request = {
+    ...dto, requestId: "multi-new-learning-tasks",
+    message: threeNewLearningRequest, autoApply: true,
+  };
+  const response = await p.chat(request);
+  assert.match(response.message.outcome ?? "", /รอยืนยันแผนเพิ่ม 3 กิจกรรม/);
+  assert.match(response.message.content, /ติวสอบ TOEIC/);
+  assert.match(response.message.content, /ฝึก DevOps/);
+  assert.ok(response.proposal);
+  const proposed = response.proposal!.sessions.filter((x: any) =>
+    !old.sessions.some((y) => y.id === x.id));
+  assert.equal(proposed.length, 3);
+  assert.deepEqual(proposed.map((x: any) => x.duration), [30, 30, 30]);
+  assert.ok(proposed.every((x: any) => x.date === future && x.status === "planned"));
+  assert.ok(proposed.every((x: any, i: number) =>
+    proposed.every((y: any, j: number) => i === j ||
+      x.start + x.duration + 15 <= y.start ||
+      x.start >= y.start + y.duration + 15)));
+  assert.deepEqual((await p.get()).sessions, old.sessions);
+  const retry = await p.chat(request);
+  assert.equal(retry.message.id, response.message.id);
+  await p.confirm(response.proposal!.id);
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 6);
+  assert.deepEqual(saved.sessions.filter((x: any) =>
+    x.id.startsWith("old-")), old.sessions);
+});
+
+test("multi-add defaults to 20-minute sessions when 30-minute sessions exceed a safe limit", async () => {
+  const { p, ai } = fixture(completedDayForLearning(future, 190));
+  ai.plannerCompletion = async () => {
+    throw new Error("multi-add needs no model-generated IDs");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "multi-20min-preview",
+    message: threeNewLearningRequest,
+  });
+  assert.ok(response.proposal);
+  const proposed = response.proposal!.sessions.filter((x: any) =>
+    !x.id.startsWith("old-"));
+  assert.equal(proposed.length, 3);
+  assert.deepEqual(proposed.map((x: any) => x.duration), [20, 20, 20]);
+  assert.equal((await p.get()).sessions.length, 3);
+});
+
+test("multi-add with no feasible slots reports a conflict, not 'กิจกรรมนี้บันทึกผลแล้ว'", async () => {
+  const state = completedDayForLearning(future, 140);
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("should be handled by validated batch proposals");
+  };
+  const result = await p.chat({
+    ...dto, requestId: "multi-conflict",
+    message: threeNewLearningRequest,
+  });
+  assert.match(result.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.doesNotMatch(result.message.content, /กิจกรรมนี้บันทึกผลแล้ว/);
+  assert.equal(result.proposal, undefined);
+  assert.equal((await p.get()).sessions.length, 3);
 });
