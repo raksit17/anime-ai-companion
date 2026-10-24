@@ -84,6 +84,82 @@ export function fits(state: State, session: Session, now: number) {
         dailyLimit)
   );
 }
+
+/** Swap the positions of two flexible, unfinished sessions on the same day.
+ * Reflow later flexible sessions only as far as mandatory breaks require.
+ * Completed and fixed sessions remain anchored; if an anchored task or
+ * bedtime makes the swap impossible, reject the entire change.
+ */
+export function swapDaySessions(
+  input: State,
+  date: string,
+  sourceId: string,
+  targetId: string,
+  now = Date.now(),
+): { sessions: Session[]; changed: Session[] } {
+  if (!validDate(date) || date < today(now))
+    throw new Error("สลับได้เฉพาะกิจกรรมของวันนี้หรือวันในอนาคต");
+  if (sourceId === targetId)
+    throw new Error("กรุณาลากไปยังกิจกรรมอื่นเพื่อสลับลำดับ");
+  const active = input.sessions
+    .filter((s) => s.date === date && (s.status === "planned" || s.status === "done"))
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+  const sourceIndex = active.findIndex((s) => s.id === sourceId);
+  const targetIndex = active.findIndex((s) => s.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0)
+    throw new Error("ไม่พบสล็อตกิจกรรมที่ยังอยู่ในตารางวันนั้น");
+  const eligible = (s: Session) =>
+    s.status === "planned" && !s.fixed &&
+    timestamp(s.date, s.start) > now;
+  if (!eligible(active[sourceIndex]) || !eligible(active[targetIndex]))
+    throw new Error("ลากสลับได้เฉพาะกิจกรรมยืดหยุ่นที่ยังไม่เริ่มและยังไม่เสร็จ");
+  const first = Math.min(sourceIndex, targetIndex);
+  const last = Math.max(sourceIndex, targetIndex);
+  if (active.slice(first, last + 1).some((s) => !eligible(s)))
+    throw new Error("สลับข้ามกิจกรรมที่ล็อกเวลา ทำเสร็จ หรือเริ่มไปแล้วไม่ได้");
+
+  const reordered = [...active];
+  [reordered[sourceIndex], reordered[targetIndex]] =
+    [reordered[targetIndex], reordered[sourceIndex]];
+  const gap = Math.max(15, input.settings.breakMinutes);
+  const { wake, sleep } = input.settings;
+  const changedById = new Map<string, Session>();
+  let nextFree = wake;
+  for (let index = 0; index < reordered.length; index++) {
+    const activity = reordered[index];
+    const oldSlotStart = active[index].start;
+    // Preserve every unaffected slot's original time where possible.
+    const desiredStart = index < first
+      ? activity.start : Math.max(oldSlotStart, nextFree);
+    if (!eligible(activity)) {
+      if (desiredStart !== activity.start || activity.start < nextFree)
+        throw new Error("การสลับชนกิจกรรมที่ล็อกเวลา หรือบันทึกเสร็จแล้ว");
+      nextFree = activity.start + activity.duration + gap;
+      continue;
+    }
+    if (desiredStart < wake || desiredStart + activity.duration > sleep ||
+        timestamp(date, desiredStart) <= now)
+      throw new Error("ลำดับใหม่นอกช่วงเวลาตื่น–นอน หรือกิจกรรมเริ่มไปแล้ว");
+    if (desiredStart !== activity.start)
+      changedById.set(activity.id, { ...activity, start: desiredStart, notified: false });
+    nextFree = desiredStart + activity.duration + gap;
+  }
+  const sessions = input.sessions.map((s) => changedById.get(s.id) ?? s);
+  const final = sessions.filter((s) =>
+    s.date === date && (s.status === "planned" || s.status === "done"))
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+  for (let i = 0; i < final.length; i++) {
+    const item = final[i];
+    if (item.start < wake || item.start + item.duration > sleep ||
+        (i > 0 && final[i - 1].start + final[i - 1].duration + gap > item.start))
+      throw new Error("ตารางหลังสลับไม่ผ่านเงื่อนไขเวลาพักหรือเวลาเข้านอน");
+  }
+  return {
+    sessions,
+    changed: final.filter((s) => changedById.has(s.id)),
+  };
+}
+
 export function plan(
   input: State,
   from: string,
