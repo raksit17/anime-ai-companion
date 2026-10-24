@@ -13,6 +13,7 @@ import {
   parseConversationalDurationEdit,
   validateOllamaDurationEdit,
   parseTimeDurationEdit,
+  parseExistingTimeMove,
   parseExerciseWithBreaks,
   normalizePlannerActions,
   freeStartForAdd,
@@ -1489,4 +1490,116 @@ test("plain duration reductions still use the existing conversational resize val
   );
   assert.equal(edit?.command?.type, "resize");
   assert.equal(edit?.command?.duration, 20);
+});
+
+function timeOnlyMoveDay(date = future) {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "code", name: "ฝึก code", start: 900, duration: 60, date,
+      goalId: "daily:code", fixed: false, status: "planned" as const, reminder: 10 },
+    { id: "job", name: "หางาน", start: 600, duration: 30, date,
+      goalId: "daily:job", fixed: false, status: "planned" as const, reminder: 10 },
+    { id: "reading", name: "อ่านหนังสือ", start: 1050, duration: 30, date,
+      goalId: "daily:reading", fixed: false, status: "planned" as const, reminder: 10 },
+  ];
+  return state;
+}
+
+test("time-only Thai move preserves existing duration and other schedule slots", () => {
+  const state = timeOnlyMoveDay();
+  const parsed = parseExistingTimeMove(state, future, "เลื่อนฝึก code 16:00");
+  assert.deepEqual(parsed?.command, {
+    type: "edit", id: "code", date: future, start: 960, duration: 60,
+    preserveOtherSlots: true,
+  });
+  const result = executeCommands(state, [parsed!.command!], future);
+  assert.deepEqual(result.sessions.map((x) => [x.id, x.start, x.duration]), [
+    ["code", 960, 60], ["job", 600, 30], ["reading", 1050, 30],
+  ]);
+  assert.equal(state.sessions[0].start, 900);
+  assert.equal(result.sessions.length, 3);
+});
+
+test("time-only move accepts explicit relative day, absolute date and alternative verbs", () => {
+  const tomorrow = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const state = timeOnlyMoveDay(tomorrow);
+  for (const msg of [
+    "พรุ่งนี้ เลื่อนฝึก code ไป 16:00",
+    "ย้ายฝึก code เป็น 16:00 พรุ่งนี้",
+    "ช่วยเปลี่ยนเวลา ฝึก code เป็น 16:00",
+    "เลื่อนฝึก code 16:00 " + tomorrow,
+  ]) {
+    const parsed = parseExistingTimeMove(state, tomorrow, msg);
+    assert.equal(parsed?.command?.date, tomorrow, msg);
+    assert.equal(parsed?.command?.start, 960, msg);
+    assert.equal(parsed?.command?.duration, 60, msg);
+  }
+});
+
+test("time-only move does not guess task ID or accept ambiguous names and times", () => {
+  const state = timeOnlyMoveDay();
+  const none = parseExistingTimeMove(state, future, "เลื่อนงานที่ไม่มี 16:00");
+  assert.match(none?.reason ?? "", /ไม่พบกิจกรรม/);
+  const dup = structuredClone(state);
+  dup.sessions.push({ ...dup.sessions[0], id: "code-duplicate" });
+  assert.match(parseExistingTimeMove(dup, future, "เลื่อนฝึก code 16:00")?.reason ?? "",
+    /มากกว่าหนึ่งรายการ/);
+  const unclear = parseExistingTimeMove(state, future, "เลื่อนฝึก code 16:00 ถึง 17:00");
+  assert.match(unclear?.reason ?? "", /หลายค่า/);
+  assert.equal(parseExistingTimeMove(state, future, "เลื่อนฝึก code 28:00")?.command, undefined);
+  assert.equal(parseExistingTimeMove(state, future, "เลื่อนฝึก code 16:00 ได้ไหม?"), undefined);
+});
+
+test("a time-only move with a conflict never relocates another activity silently", () => {
+  const state = timeOnlyMoveDay();
+  state.sessions.push({
+    id: "appointment", name: "ประชุม", start: 990, duration: 60, date: future,
+    status: "planned", fixed: true, reminder: 10,
+  });
+  const action = parseExistingTimeMove(state, future, "เลื่อนฝึก code 16:00")!.command!;
+  assert.throws(() => executeCommands(state, [action], future), /เลื่อนไป 16:00 ไม่ได้/);
+  assert.equal(state.sessions[0].start, 900);
+  assert.equal(state.sessions.find((x) => x.id === "appointment")?.start, 990);
+});
+
+test("chat correctly moves an existing code session to 16:00 and returns an actual receipt", async () => {
+  const { p, ai } = fixture(timeOnlyMoveDay());
+  ai.plannerCompletion = async () => {
+    throw new Error("the local model should not invent duration for an exact existing-task move");
+  };
+  const request = { ...dto, requestId: "move-code-16", message: "เลื่อนฝึก code 16:00" };
+  const first = await p.chat(request);
+  assert.equal(first.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(first.message.content, /16:00–17:00/);
+  assert.match(first.message.content, /กิจกรรมอื่นยังอยู่เวลาเดิม/);
+  assert.equal(first.message.appliedChanges?.length, 1);
+  assert.deepEqual(first.message.appliedChanges?.[0], {
+    id: "code", name: "ฝึก code", date: future, start: 960, duration: 60,
+    status: "planned", kind: "updated",
+  });
+  const saved = await p.get();
+  assert.equal(saved.sessions.find((x: any) => x.id === "code")?.start, 960);
+  assert.equal(saved.sessions.length, 3);
+  assert.equal((await p.chat(request)).message.id, first.message.id);
+  assert.equal((await p.get()).sessions.length, 3);
+});
+
+test("chat rejects a conflicting time-only move without saving or hiding original plan", async () => {
+  const state = timeOnlyMoveDay();
+  state.sessions.push({
+    id: "appointment", name: "ประชุม", start: 990, duration: 60, date: future,
+    status: "planned", fixed: true, reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("should be handled without the local model");
+  };
+  const result = await p.chat({
+    ...dto, requestId: "move-code-conflict", message: "เลื่อนฝึก code 16:00",
+  });
+  assert.match(result.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(result.message.content, /16:00/);
+  assert.equal(result.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.find((x: any) => x.id === "code")?.start, 900);
 });
