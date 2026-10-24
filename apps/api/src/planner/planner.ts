@@ -58,9 +58,11 @@ import {
   PlanDto,
   ProgressDto,
   SettingsDto,
+  SwapSessionsDto,
 } from "./dto";
 import {
   fits,
+  swapDaySessions,
   initial,
   plan,
   Session,
@@ -337,6 +339,36 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       s.sessions.push(event);
       this.changed(s);
       return event;
+    }, true);
+  }
+  swapSessions(dto: SwapSessionsDto) {
+    this.date(dto.date);
+    return this.access((s) => {
+      if (s.revision !== dto.expectedRevision)
+        throw new ConflictException(
+          "ตารางมีการเปลี่ยนแปลงแล้ว กรุณาโหลดตารางล่าสุดก่อนลากสลับอีกครั้ง",
+        );
+      let result: ReturnType<typeof swapDaySessions>;
+      try {
+        result = swapDaySessions(
+          s, dto.date, dto.sourceId, dto.targetId, Date.now(),
+        );
+      } catch (error) {
+        throw new ConflictException((error as Error).message);
+      }
+      if (!result.changed.length)
+        throw new ConflictException("ตำแหน่งที่เลือกยังไม่ทำให้ตารางเปลี่ยน");
+      s.sessions = result.sessions;
+      this.changed(s);
+      return {
+        ok: true,
+        date: dto.date,
+        revision: s.revision,
+        changed: result.changed.map((item) => ({
+          id: item.id, name: item.name, date: item.date,
+          start: item.start, duration: item.duration,
+        })),
+      };
     }, true);
   }
   removeSession(id: string) {
@@ -1234,6 +1266,9 @@ class PlannerController {
   }
   @Post("events") event(@Body() d: EventDto) {
     return this.planner.event(d);
+  }
+  @Post("sessions/reorder") reorder(@Body() dto: SwapSessionsDto) {
+    return this.planner.swapSessions(dto);
   }
   @Delete("sessions/:id") removeSession(@Param("id") id: string) {
     return this.planner.removeSession(id);
