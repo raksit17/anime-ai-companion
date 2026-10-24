@@ -265,6 +265,13 @@ export function parseGroupShiftPlan(
   const instruction = lines.filter((line) => !bullet.test(line)).join(" ").trim();
   if (!/(?:ย้าย|เลื่อน|ขยับ|เริ่มตั้งแต่|เริ่มเวลา)/u.test(instruction))
     return undefined;
+  // A single existing-slot move must never be intercepted by the group
+  // handler. Require an actual batch source or an explicit reference to the
+  // whole prior plan, even if the message includes a clock.
+  const refersToGroup = /(?:ทั้งชุด|ทั้งหมด|ทั้งสาม|แผน(?:เดิม|นี้)|เริ่ม\s*ตั้งแต่|ย้ายไปที่\s*เริ่ม)/u.test(instruction);
+  if (quoted.length < 2 && pendingSessions.length < 2 &&
+      !recentProposalText && !refersToGroup)
+    return undefined;
   const clock = instruction.match(/(?:^|[^\d])(\d{1,2}):(\d{2})(?!\d)/u);
   const evening = instruction.match(/([1-5])\s*ทุ่ม/u);
   const wordEvening = /สอง\s*ทุ่ม/u.test(instruction);
