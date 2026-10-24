@@ -2142,9 +2142,11 @@ test("inline editor rejects completed, fixed, started sessions and wrong date", 
   await assert.rejects(() => p.editSessionTime("cleaning", {
     date: future, start: 570, duration: 15, expectedRevision: 0,
   }), /ยังไม่เริ่ม/);
+  const otherValidDate = new Date(Date.parse(future) + 86400000)
+    .toISOString().slice(0, 10);
   await assert.rejects(() => p.editSessionTime("bbc", {
-    date: "2030-01-07", start: 525, duration: 10, expectedRevision: 0,
-  }));
+    date: otherValidDate, start: 525, duration: 10, expectedRevision: 0,
+  }), /ไม่พบกิจกรรมในวันที่เลือก/);
   assert.equal((await p.get()).revision, 0);
   const started = draggableDay();
   assert.throws(() => editDaySessionTime(
