@@ -190,16 +190,24 @@ export function parseMultipleNewTasks(
   now = Date.now(),
 ): { date: string; names: string[]; durations: (number | undefined)[] } | undefined {
   const source = message.trim();
-  if (!/(?:ช่วย\s*จัดเวลา|ช่วย\s*จัดตาราง|เพิ่ม(?:งาน|กิจกรรม)|ช่วย\s*เพิ่ม)/iu.test(source) ||
-      !/\sและ\s/u.test(source) || /(?:ไหม|หรือเปล่า|\?)/u.test(source))
+  // Lists can be separated by commas, Thai/English "และ", or both.
+  // "พรุ่งนี้ อยาก A, B และ C จัดเวลาให้ที" is a scheduling request
+  // even without a leading "ช่วยจัดเวลา". The items are not an AI guess.
+  if (!/(?:ช่วย\s*จัดเวลา|ช่วย\s*จัดตาราง|เพิ่ม(?:งาน|กิจกรรม)|ช่วย\s*เพิ่ม|อยาก(?:จะ)?|จัด(?:ตาราง|เวลา)ให้(?:ที|หน่อย|ด้วย))/iu.test(source) ||
+      !/(?:\s+และ\s+|[,，、])/u.test(source) ||
+      /(?:ไหม|หรือเปล่า|\?)/u.test(source))
     return undefined;
   // Do not let a batch handler discard exact clocks requested for individual
   // activities; those require a separate explicit-time interpretation.
   if (/\d{1,2}:\d{2}/u.test(source)) return undefined;
-  const marker = /(?:ช่วย\s*จัดเวลา|ช่วย\s*จัดตาราง|เพิ่ม(?:งาน|กิจกรรม)?|ช่วย\s*เพิ่ม)\s*/iu;
+  const marker = /(?:ช่วย\s*จัดเวลา|ช่วย\s*จัดตาราง|เพิ่ม(?:งาน|กิจกรรม)?|ช่วย\s*เพิ่ม|อยาก(?:จะ)?\s*)/iu;
   const matched = marker.exec(source);
-  if (!matched) return undefined;
-  let body = source.slice(matched.index + matched[0].length).trim();
+  // An explicit planning verb at the END applies to the entire list.
+  let body = matched
+    ? source.slice(matched.index + matched[0].length).trim()
+    : source.trim();
+  if (!matched && !/จัด(?:ตาราง|เวลา)ให้(?:ที|หน่อย|ด้วย)\s*$/u.test(body))
+    return undefined;
   const relative = source.match(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/u)?.[0];
   const days = relative === "วันนี้" ? 0 :
     relative === "พรุ่งนี้" || relative === "พรุ้งนี้" ? 1 :
@@ -208,8 +216,10 @@ export function parseMultipleNewTasks(
     new Date(Date.parse(today(now)) + days * 86400000).toISOString().slice(0, 10);
   if (!validDate(date) || date < today(now)) return undefined;
   body = body.replace(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu, " ").trim()
+    .replace(/\s*(?:ช่วย)?จัด(?:ตาราง|เวลา)ให้(?:ที|หน่อย|ด้วย)\s*$/u, "")
     .replace(/(?:ให้หน่อย|ด้วยนะ|ด้วย|หน่อย|ครับ|ค่ะ)\s*$/u, "").trim();
-  const parts = body.split(/\s+และ\s+/u).map((part) => part.trim()).filter(Boolean);
+  const parts = body.split(/\s*[，,、]\s*|\s+และ\s+/u)
+    .map((part) => part.trim()).filter(Boolean);
   if (parts.length < 2 || parts.length > 6) return undefined;
   const names: string[] = [];
   const durations: (number | undefined)[] = [];
@@ -234,6 +244,41 @@ export function parseMultipleNewTasks(
   return { date, names, durations };
 }
 
+
+
+/**
+ * Turn a follow-up asking for actual free slots into a concrete draft based
+ * on the latest user's batch request, not the model's earlier refusal.
+ * The calendar is untouched until explicit proposal confirmation.
+ */
+export function parseBatchAlternativeFollowUp(
+  history: { role: string; content: string; createdAt?: string }[],
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ReturnType<typeof parseMultipleNewTasks> | undefined {
+  if (!/(?:ช่วย|ขอ|ลอง|เสนอ|จัด)/u.test(message) ||
+      !/(?:เสนอช่วงเวลาอื่น|เวลาว่างอื่น|เสนอเวลาอื่น|จัดตารางใหม่|เสนอแผนใหม่|หาช่วงเวลาอื่น)/u.test(message))
+    return undefined;
+  if (/(?:ยืนยัน|บันทึกเลย|ลงตารางทันที)/u.test(message))
+    return undefined;
+  const latest = history.at(-1);
+  // The follow-up must be in response to Yuna; no stale, unrelated batch.
+  if (latest?.role !== "assistant" ||
+      !/(?:ตาราง|กิจกรรม|เวลาพัก|ข้อจำกัด|เวลาว่าง|แผน)/u.test(latest.content))
+    return undefined;
+  const latestUser = [...history.slice(-5)].reverse()
+    .find((entry) => entry.role === "user");
+  if (!latestUser) return undefined;
+  const originatingTime = latestUser.createdAt &&
+    Number.isFinite(Date.parse(latestUser.createdAt))
+      ? Date.parse(latestUser.createdAt) : now;
+  return parseMultipleNewTasks(
+    latestUser.content,
+    selected,
+    originatingTime,
+  );
+}
 
 export type GroupShiftPlan = {
   actions?: Command[];
