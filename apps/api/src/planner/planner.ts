@@ -27,6 +27,7 @@ import {
   validateOllamaDurationEdit,
   parseTimeDurationEdit,
   parseExerciseWithBreaks,
+  parseExistingTimeMove,
   parseScheduledAdd,
   completeScheduledAdd,
   simpleAddFromMessage,
@@ -524,6 +525,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       );
       durationEdit = parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
         parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
+        parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
       timedAdd = durationEdit ? undefined :
@@ -534,7 +536,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       const unparsedClockRequest =
         !durationEdit && !timedAdd &&
         /\d{1,2}:\d{2}/u.test(dto.message) &&
-        /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน/u.test(dto.message);
+        /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน|เลื่อน|ย้าย|ขยับ|เปลี่ยนเวลา/u.test(dto.message);
       const guided = durationEdit || timedAdd || unparsedClockRequest
         ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
       if (durationEdit) {
@@ -846,7 +848,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             const fmt = (minutes: number) =>
               `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
             output.reply = dto.autoApply
-              ? `เรียบร้อยค่ะ ฉันตั้ง ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) ตามที่ขอแล้วนะ งานอื่นที่จำเป็นต้องขยับก็จัดให้เว้นพักตามกฎค่ะ`
+              ? `เรียบร้อยค่ะ ฉันตั้ง ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) ตามที่ขอแล้วนะ ${editedCommand?.preserveOtherSlots ? "กิจกรรมอื่นยังอยู่เวลาเดิมค่ะ" : "งานอื่นที่จำเป็นต้องขยับก็จัดให้เว้นพักตามกฎค่ะ"}`
               : `ฉันเตรียมแผน ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) แล้วค่ะ รอเธอยืนยันก่อนนะ`;
           }
           // Show the new duration only after the validator returned a
