@@ -296,7 +296,14 @@ export function parseExistingTimeMove(
   const date = absoluteDates[0]?.[0] ?? relativeDate ?? selected;
   input = input.replace(/\b\d{4}-\d{2}-\d{2}\b/gu, " ")
     .replace(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu, " ").trim();
-  if (!verb.test(input)) return undefined;
+  if (!verb.test(input)) {
+    // Also support "Coding เลื่อนไป 22:00" (task name before the verb).
+    const reverse = input.match(
+      /^(.+?)\s*(?:เลื่อนไป|เลื่อน|ย้ายไป|ย้าย|ขยับไป|ขยับ)\s*(\d{1,2}:\d{2})\s*$/u,
+    );
+    if (!reverse) return undefined;
+    input = "เลื่อน" + reverse[1].trim() + " " + reverse[2];
+  }
   if (relativeDate && absoluteDates[0] && relativeDate !== absoluteDates[0][0])
     return { reason: "วันที่ที่ระบุไม่ตรงกับคำว่าพรุ่งนี้/วันนี้ กรุณายืนยันวันที่" };
   const clocks = [...input.matchAll(/(\d{1,2}):(\d{2})/gu)];
@@ -932,7 +939,10 @@ export function executeCommands(
             timestamp(x.date, x.start) < now)),
       };
       if (!fits(locked, edited, now))
-        throw new Error("เวลาที่ขอชนกิจกรรมล็อกไว้ เวลาพัก เวลานอน หรือเพดานรายวัน");
+        throw new Error(a.preserveOtherSlots
+          ? "เลื่อนไป " + formatMinutes(a.start!) +
+            " ไม่ได้ เพราะชนกิจกรรมที่ล็อกไว้ เวลาพัก เวลานอน หรือขีดจำกัด"
+          : "เวลาที่ขอชนกิจกรรมล็อกไว้ เวลาพัก เวลานอน หรือเพดานรายวัน");
       // If the requested slot already fits the full schedule, retain every
       // other activity and apply the targeted edit without adaptive reflow.
       if (fits(state, edited, now)) {
