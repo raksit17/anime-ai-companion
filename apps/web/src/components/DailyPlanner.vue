@@ -67,7 +67,11 @@ const date = ref(today()),
   dragSourceId = ref(""),
   dropTargetId = ref(""),
   reorderMessage = ref(""),
-  scheduleRevision = ref(0);
+  scheduleRevision = ref(0),
+  editingSessionId = ref(""),
+  editStart = ref(""),
+  editDuration = ref(30),
+  editError = ref("");
 const input = ref(""),
   error = ref(""),
   busy = ref(false),
@@ -151,6 +155,8 @@ const label = (s: string) =>
     s
   ] ?? s;
 function select(d: string) {
+  editingSessionId.value = "";
+  editError.value = "";
   highlightedSession.value = "";
   dragSourceId.value = "";
   dropTargetId.value = "";
@@ -306,6 +312,76 @@ function canReorder(session: Session) {
     Date.parse(`${session.date}T00:00:00+07:00`) +
       session.start * 60000 > now.value;
 }
+function openTimeEditor(session: Session) {
+  if (busy.value || !canReorder(session)) return;
+  if (editingSessionId.value === session.id) {
+    editingSessionId.value = "";
+    editError.value = "";
+    return;
+  }
+  editingSessionId.value = session.id;
+  editStart.value = clock(session.start);
+  editDuration.value = session.duration;
+  editError.value = "";
+  reorderMessage.value = "";
+}
+function cancelTimeEditor() {
+  editingSessionId.value = "";
+  editError.value = "";
+}
+function parsedEditStart(): number | undefined {
+  if (!/^\d{2}:\d{2}$/.test(editStart.value)) return undefined;
+  const [hour, minute] = editStart.value.split(":").map(Number);
+  return hour < 24 && minute < 60 ? hour * 60 + minute : undefined;
+}
+const editedEnd = computed(() => {
+  const start = parsedEditStart();
+  if (start === undefined || !Number.isInteger(editDuration.value) ||
+      editDuration.value < 5 || editDuration.value > 240 ||
+      start + editDuration.value > 1440) return "";
+  return clock(start + editDuration.value);
+});
+async function saveTimeEdit(session: Session) {
+  if (busy.value || editingSessionId.value !== session.id ||
+      !canReorder(session)) return;
+  const start = parsedEditStart();
+  const duration = editDuration.value;
+  if (start === undefined || !Number.isInteger(duration) ||
+      duration < 5 || duration > 240 || !editedEnd.value) {
+    editError.value = "กรุณาเลือกเวลาเริ่มและระยะเวลา 5–240 นาทีให้ถูกต้อง";
+    return;
+  }
+  if (start === session.start && duration === session.duration) {
+    editError.value = "เวลาและระยะเวลายังเหมือนเดิม";
+    return;
+  }
+  busy.value = true;
+  editError.value = "";
+  error.value = "";
+  reorderMessage.value = "";
+  try {
+    const result = await api<{ session: Session }>(
+      `/planner/sessions/${encodeURIComponent(session.id)}/schedule`,
+      "PATCH",
+      {
+        date: session.date, start, duration,
+        expectedRevision: scheduleRevision.value,
+      },
+    );
+    proposal.value = undefined;
+    await refresh();
+    cancelTimeEditor();
+    highlightedSession.value = session.id;
+    reorderMessage.value =
+      `แก้เวลา ${result.session.name} เป็น ${clock(result.session.start)}–${clock(result.session.start + result.session.duration)} (${result.session.duration} นาที) แล้ว`;
+  } catch (e) {
+    editError.value = String(e);
+    try { await refresh(); } catch { /* Show the actual error. */ }
+  } finally {
+    busy.value = false;
+  }
+}
+
 function eligibleNeighbor(session: Session, direction: -1 | 1) {
   const items = daySessions.value.filter(canReorder);
   const index = items.findIndex((item) => item.id === session.id);
@@ -631,6 +707,15 @@ watch(advanced, (value) => {
                       :aria-label="`สลับ ${s.name} กับกิจกรรมถัดไป`"
                       @click="swapWithNeighbor(s, 1)"
                     >↓</button>
+                    <button
+                      class="edit-time-trigger"
+                      type="button"
+                      :disabled="busy"
+                      :aria-expanded="editingSessionId === s.id"
+                      :aria-controls="`planner-edit-time-${s.id}`"
+                      :aria-label="`แก้เวลาเริ่มและระยะเวลา ${s.name}`"
+                      @click="openTimeEditor(s)"
+                    >{{ editingSessionId === s.id ? "ปิด" : "แก้เวลา" }}</button>
                   </template>
                   <span class="status">{{ label(s.status) }}</span>
                 </div>
@@ -638,6 +723,47 @@ watch(advanced, (value) => {
               <p>
                 {{ s.duration }} นาที <span v-if="s.fixed">· นัดคงที่</span>
               </p>
+              <form
+                v-if="editingSessionId === s.id"
+                :id="`planner-edit-time-${s.id}`"
+                class="inline-time-edit"
+                @submit.prevent="saveTimeEdit(s)"
+              >
+                <div class="time-edit-fields">
+                  <label>
+                    <span>เวลาเริ่ม</span>
+                    <input
+                      v-model="editStart"
+                      type="time"
+                      step="300"
+                      required
+                      :disabled="busy"
+                    />
+                  </label>
+                  <label>
+                    <span>ระยะเวลา (นาที)</span>
+                    <input
+                      v-model.number="editDuration"
+                      type="number"
+                      min="5"
+                      max="240"
+                      step="5"
+                      required
+                      :disabled="busy"
+                    />
+                  </label>
+                </div>
+                <p class="edit-time-preview" aria-live="polite">
+                  เวลาเสร็จใหม่:
+                  <strong>{{ editedEnd || "กรุณาตรวจเวลาและระยะเวลา" }}</strong>
+                  · พักระหว่างงานอย่างน้อย {{ Math.max(15, settings.breakMinutes) }} นาที
+                </p>
+                <p v-if="editError" class="time-edit-error" role="alert">{{ editError }}</p>
+                <div class="edit-time-buttons">
+                  <button type="submit" :disabled="busy || !editedEnd">บันทึกเวลา</button>
+                  <button type="button" :disabled="busy" @click="cancelTimeEditor">ยกเลิก</button>
+                </div>
+              </form>
               <div v-if="s.status === 'planned'" class="task-actions">
                 <button :disabled="busy" @click="mark(s, 'done')">
                   ✓ เสร็จแล้ว</button
@@ -1049,6 +1175,76 @@ watch(advanced, (value) => {
 .reorder-handle { cursor: grab; }
 .reorder-handle:active { cursor: grabbing; }
 .reorder-arrow:disabled { opacity: 0.3; cursor: not-allowed; }
+.edit-time-trigger {
+  min-height: 27px;
+  border: 1px solid #cfdaca;
+  border-radius: 7px;
+  padding: 4px 7px;
+  background: #edf3e7;
+  color: #506b42;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.inline-time-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 10px 0 12px;
+  padding: 12px;
+  border: 1px solid #d9e3d3;
+  border-radius: 10px;
+  background: #f8faf5;
+}
+.time-edit-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.time-edit-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  color: #53664d;
+}
+.time-edit-fields input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid #d7e1d3;
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: white;
+  color: #26342a;
+}
+.edit-time-preview {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+}
+.time-edit-error {
+  margin: 0;
+  color: #a6473d;
+  font-size: 11px;
+}
+.edit-time-buttons {
+  display: flex;
+  gap: 8px;
+}
+.edit-time-buttons button {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.edit-time-buttons button:first-child {
+  background: #7b8f6a;
+  color: white;
+}
+@media (max-width: 620px) {
+  .task-heading-tools { flex-wrap: wrap; justify-content: flex-end; }
+  .time-edit-fields { grid-template-columns: 1fr; }
+}
 .reorder-target .task {
   border: 2px dashed #6f9367;
   background: #f0f7e9;

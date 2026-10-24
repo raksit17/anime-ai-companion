@@ -90,6 +90,54 @@ export function fits(state: State, session: Session, now: number) {
  * Completed and fixed sessions remain anchored; if an anchored task or
  * bedtime makes the swap impossible, reject the entire change.
  */
+
+/** Edit a single flexible session inline. Never move another task, mutate
+ * history or silently shorten breaks. The backend is authoritative.
+ */
+export function editDaySessionTime(
+  state: State,
+  id: string,
+  date: string,
+  start: number,
+  duration: number,
+  now = Date.now(),
+): Session {
+  const existing = state.sessions.find((task) => task.id === id);
+  if (!existing || existing.date !== date || !validDate(date))
+    throw new Error("ไม่พบกิจกรรมในวันที่เลือก");
+  if (existing.fixed || existing.status !== "planned" ||
+      timestamp(existing.date, existing.start) <= now)
+    throw new Error("แก้เวลาได้เฉพาะกิจกรรมยืดหยุ่นที่ยังไม่เริ่ม");
+  if (!Number.isInteger(start) || start < 0 || start > 1439 ||
+      !Number.isInteger(duration) || duration < 5 || duration > 240)
+    throw new Error("กรุณาระบุเวลาเริ่มและระยะเวลา 5–240 นาทีให้ถูกต้อง");
+  if (start === existing.start && duration === existing.duration)
+    throw new Error("เวลาและระยะเวลายังเหมือนเดิม");
+  const proposed = { ...existing, start, duration, notified: false };
+  // Enforce the 15-minute minimum on direct editing, even when a legacy
+  // user setting contains a smaller break value.
+  const strict: State = {
+    ...state,
+    settings: {
+      ...state.settings,
+      breakMinutes: Math.max(15, state.settings.breakMinutes),
+    },
+  };
+  if (!fits(strict, proposed, now))
+    throw new Error("เวลาที่แก้ชนกิจกรรมอื่น พักไม่ครบ 15 นาที อยู่นอกเวลาตื่น–นอน หรือเกินเพดานรายวัน");
+  // Non-recurring one-off activities are not accounted for by fits()'s
+  // goal-based capacity guard. Preserve the current load, reject only
+  // changes that add load beyond the daily cap.
+  const oldMinutes = state.sessions.filter((task) =>
+    task.date === date && task.status === "planned" && !task.fixed)
+    .reduce((minutes, task) => minutes + task.duration, 0);
+  const newMinutes = oldMinutes - existing.duration + duration;
+  const limit = state.capacityOverrides?.[date] ?? state.settings.maxMinutes;
+  if (newMinutes > oldMinutes && newMinutes > limit)
+    throw new Error("การเพิ่มระยะเวลาเกินเพดานกิจกรรมยืดหยุ่นรายวัน");
+  return proposed;
+}
+
 export function swapDaySessions(
   input: State,
   date: string,
