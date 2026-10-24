@@ -30,6 +30,7 @@ import {
   parseExistingTimeMove,
   parseScheduledAdd,
   parseMultipleNewTasks,
+  parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   completeScheduledAdd,
   simpleAddFromMessage,
@@ -494,6 +495,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let durationEdit: ReturnType<typeof parseDurationEdit>;
     let timedAdd: ReturnType<typeof parseScheduledAdd>;
     let multipleAdds: ReturnType<typeof parseMultipleNewTasks>;
+    let alternativeBatch: ReturnType<typeof parseMultipleNewTasks>;
     let shiftedBatch: ReturnType<typeof parseGroupShiftPlan>;
     let requireBatchApproval = false;
     let batchApprovalCount = 0;
@@ -551,8 +553,12 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      multipleAdds = durationEdit || shiftedBatch ? undefined :
+      const directMultipleAdds = durationEdit || shiftedBatch ? undefined :
         parseMultipleNewTasks(dto.message, dto.date);
+      alternativeBatch = durationEdit || shiftedBatch || directMultipleAdds
+        ? undefined
+        : parseBatchAlternativeFollowUp(history, dto.message, dto.date);
+      multipleAdds = directMultipleAdds ?? alternativeBatch;
       timedAdd = durationEdit || multipleAdds || shiftedBatch ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
@@ -658,13 +664,58 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           // The user did not specify durations for every task. Offer a
           // manageable draft of 30 minutes each, then 20 if necessary;
           // never silently shorten an explicitly stated duration.
+          // If this is a follow-up to an existing unconfirmed proposal,
+          // start the alternative at least 60 minutes later; otherwise an
+          // earlier refusal with no proposal should produce the first real fit.
+          const priorBatch = alternativeBatch && snapshot.proposal &&
+            snapshot.proposal.expires > Date.now() &&
+            snapshot.proposal.revision === snapshot.revision &&
+            latestReply?.proposalId === snapshot.proposal.id
+              ? snapshot.proposal.sessions
+                  .filter((item) => !snapshot.sessions.some((old) => old.id === item.id))
+                  .sort((a, b) => a.start - b.start)
+              : [];
+          const alternativeAfter =
+            priorBatch.length === multipleAdds.names.length &&
+            priorBatch.every((item, i) =>
+              item.name.toLocaleLowerCase() === multipleAdds!.names[i].toLocaleLowerCase() &&
+              item.date === multipleAdds!.date)
+              ? priorBatch[0].start + 60 : undefined;
           for (const suggested of [30, 20]) {
             const requested = multipleAdds.names.map((name, i) => ({
               type: "add" as const, name, date: multipleAdds!.date,
               duration: multipleAdds!.durations[i] ?? suggested, fixed: false,
             }));
             try {
-              const draft = executeCommands(snapshot, requested, dto.date);
+              let draft: ReturnType<typeof executeCommands>;
+              if (alternativeAfter !== undefined) {
+                const staged = structuredClone(snapshot);
+                let cursor = alternativeAfter;
+                const minimumBreak = Math.max(15, staged.settings.breakMinutes);
+                for (const action of requested) {
+                  let placed: ReturnType<typeof executeCommands> | undefined;
+                  for (let start = Math.ceil(cursor / 15) * 15;
+                    start + action.duration <= staged.settings.sleep;
+                    start += 15) {
+                    try {
+                      placed = executeCommands(staged, [{ ...action, start }], dto.date);
+                      break;
+                    } catch {
+                      // Try the next gap on the actual staged calendar.
+                    }
+                  }
+                  if (!placed)
+                    throw new Error("ไม่พบช่วงเวลาอื่นที่เว้นพักได้เพียงพอ");
+                  const next = placed.sessions.find((item) =>
+                    !staged.sessions.some((prior) => prior.id === item.id));
+                  if (!next) throw new Error("ไม่สามารถยืนยันสล็อตใหม่ได้");
+                  staged.sessions = placed.sessions;
+                  cursor = next.start + next.duration + minimumBreak;
+                }
+                draft = { sessions: staged.sessions, notices: [] };
+              } else {
+                draft = executeCommands(snapshot, requested, dto.date);
+              }
               const added = draft.sessions.filter((item) =>
                 !snapshot.sessions.some((old) => old.id === item.id));
               if (added.length !== requested.length) continue;
@@ -689,7 +740,12 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               !snapshot.sessions.some((old) => old.id === item.id));
             batchApprovalCount = added.length;
             output = {
-              reply: "ยูนะลองจัดเวลาให้แล้วนะคะ เป็นแผนตัวอย่างที่ยังไม่บันทึกค่ะ\n" +
+              reply: (alternativeBatch
+                  ? "ยูนะตรวจตารางจริงแล้วและเสนอช่วงเวลาใหม่ให้ค่ะ"
+                  : "ยูนะตรวจตารางจริงแล้วและจัดช่วงเวลาที่ไม่ชนกิจกรรมเดิมให้ค่ะ") +
+                " เป็นแผนตัวอย่างที่ยังไม่บันทึกนะคะ" +
+                (multipleAdds.durations.some((duration) => duration === undefined)
+                  ? " สำหรับงานที่ไม่ได้บอกระยะเวลา ยูนะขอเสนอระยะเวลาตามตัวอย่างด้านล่างค่ะ" : "") + "\n" +
                 added.map((item) =>
                   "• " + item.name + " " + clock(item.start) + "–" +
                   clock(item.start + item.duration) + " (" + item.duration +

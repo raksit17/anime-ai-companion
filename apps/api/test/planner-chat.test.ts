@@ -8,6 +8,7 @@ import {
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
   parseMultipleNewTasks,
+  parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   parseScheduledAdd,
   completeScheduledAdd,
@@ -1847,4 +1848,128 @@ test("multi-task group collision returns a truthful refusal without changing com
   assert.match(response.message.content, /ยังย้ายแผนทั้งชุด/);
   assert.equal(response.proposal, undefined);
   assert.deepEqual((await p.get()).sessions, state.sessions);
+});
+
+const fiveTomorrowRequests =
+  "พรุ้งนี้ อยาก ออกกำลังกาย ,อ่านข่าว bbc, ทำความสะอาดห้อง ,เรียน coding และ ทำ assignment for software developer position ของ Playtorium จัดเวลาให้ที";
+const askAlternative =
+  "ช่วยเสนอช่วงเวลาอื่นที่ไม่ชนตารางเดิมและเป็นไปตามข้อจำกัด โดยยังไม่เปลี่ยนตารางเดิม";
+const tomorrowFromNow = new Date(Date.parse(today()) + 86400000)
+  .toISOString().slice(0, 10);
+
+test("comma+and five-task Thai request is a clear batch even with prefix and suffix planning verbs", () => {
+  const parsed = parseMultipleNewTasks(fiveTomorrowRequests, today());
+  assert.equal(parsed?.date, tomorrowFromNow);
+  assert.deepEqual(parsed?.names, [
+    "ออกกำลังกาย", "อ่านข่าว bbc", "ทำความสะอาดห้อง",
+    "เรียน coding", "ทำ assignment for software developer position ของ Playtorium",
+  ]);
+  assert.deepEqual(parsed?.durations, [undefined, undefined, undefined, undefined, undefined]);
+  assert.equal(parseMultipleNewTasks(
+    "อยากรู้ว่าวันพรุ่งนี้ตารางมีอะไรไหม?", today()), undefined);
+  assert.equal(parseMultipleNewTasks(
+    "ช่วยจัดเวลา ออกกำลังกาย และ อ่านข่าว bbc เวลา 09:00", today()), undefined);
+});
+
+test("the empty next-day calendar fits all 5 activities and must offer a validated preview", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.settings.sleep = 1260;
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("clear five-task requests must not rely on the local model's inaccurate full-day claim");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "five-tomorrow-preview", date: today(),
+    message: fiveTomorrowRequests, autoApply: true,
+  });
+  assert.match(response.message.outcome ?? "", /รอยืนยันแผนเพิ่ม 5 กิจกรรม/);
+  assert.match(response.message.content, /ออกกำลังกาย/);
+  assert.match(response.message.content, /Playtorium/);
+  assert.match(response.message.content, /30 นาที/);
+  assert.ok(response.proposal);
+  const tasks = response.proposal!.sessions.filter((item: any) =>
+    item.date === tomorrowFromNow && item.status === "planned");
+  assert.equal(tasks.length, 5);
+  assert.deepEqual(tasks.map((item: any) => item.duration), [30, 30, 30, 30, 30]);
+  for (let i = 1; i < tasks.length; i++)
+    assert.ok(tasks[i].start >= tasks[i-1].start + tasks[i-1].duration + 15);
+  assert.equal(tasks.reduce((minutes: number, item: any) => minutes + item.duration, 0), 150);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("free-time follow-up offers a DISTINCT later proposal without changing the original schedule", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("concrete free-time follow-up should not need the model to invent times");
+  };
+  const first = await p.chat({
+    ...dto, requestId: "first-five-tasks", date: today(),
+    message: fiveTomorrowRequests, autoApply: true,
+  });
+  assert.ok(first.proposal);
+  const second = await p.chat({
+    ...dto, requestId: "alternative-five-tasks", date: today(),
+    message: askAlternative, autoApply: true,
+  });
+  assert.match(second.message.outcome ?? "", /รอยืนยันแผนเพิ่ม 5 กิจกรรม/);
+  assert.match(second.message.content, /เสนอช่วงเวลาใหม่/);
+  assert.ok(second.proposal);
+  assert.notEqual(first.proposal!.id, second.proposal!.id);
+  assert.equal(second.proposal!.sessions.length, 5);
+  assert.ok(second.proposal!.sessions[0].start > first.proposal!.sessions[0].start);
+  assert.equal((await p.get()).sessions.length, 0);
+  await p.confirm(second.proposal!.id);
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 5);
+  assert.deepEqual(saved.sessions.map((item: any) => item.id),
+    second.proposal!.sessions.map((item: any) => item.id));
+});
+
+test("free-time follow-up can recover previous user batch after a legacy Ollama refusal", async () => {
+  const state = initial() as any;
+  state.settings.maxMinutes = 720;
+  state.chats = {
+    yuna: [
+      { id: "legacy-request", role: "user", content: fiveTomorrowRequests,
+        createdAt: new Date().toISOString() },
+      { id: "legacy-refusal", role: "assistant",
+        content: "พรุ่งนี้กิจกรรมทั้งหมดชนกัน จัดตารางไม่ได้ ต้องเสนอเวลาอื่น",
+        outcome: "คำตอบจาก Yuna", createdAt: new Date().toISOString() },
+    ],
+  };
+  assert.deepEqual(
+    parseBatchAlternativeFollowUp(state.chats.yuna, askAlternative, today())?.names,
+    parseMultipleNewTasks(fiveTomorrowRequests, today())?.names,
+  );
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("do not repeat unsupported capacity refusals on an empty day");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "legacy-alternative-five", date: today(),
+    message: askAlternative, autoApply: true,
+  });
+  assert.ok(response.proposal);
+  assert.equal(response.proposal!.sessions.length, 5);
+  assert.match(response.message.content, /ยูนะตรวจตารางจริงแล้ว/);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("five-task free-time request rejects truly insufficient capacity without fabricated success", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 60;
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("insufficient capacity must be explained by deterministic validation");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "five-not-fit", date: today(), message: fiveTomorrowRequests,
+  });
+  assert.match(response.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(response.message.content, /ยังจัดกิจกรรมใหม่ทั้ง 5 รายการ/);
+  assert.equal(response.proposal, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
 });
