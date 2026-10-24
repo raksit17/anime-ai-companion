@@ -23,7 +23,7 @@ import {
   explainExtendFollowUp,
   plannerMessages,
 } from "../src/planner/chat-engine";
-import { initial, today, plan, swapDaySessions } from "../src/planner/engine";
+import { initial, today, plan, swapDaySessions, editDaySessionTime } from "../src/planner/engine";
 const require = createRequire(import.meta.url);
 const { PlannerService } = require("../dist/planner/planner.js");
 const now = Date.parse("2030-01-07T00:00:00+07:00"),
@@ -2079,4 +2079,119 @@ test("drag swap rejects wrong date, same task, and missing targets", () => {
   assert.throws(() => swapDaySessions(state, future, "exercise", "exercise"), /กิจกรรมอื่น/);
   assert.throws(() => swapDaySessions(state, future, "exercise", "bad-id"), /ไม่พบสล็อต/);
   assert.throws(() => swapDaySessions(state, "2020-01-01", "exercise", "bbc"), /วันนี้หรือวันในอนาคต/);
+});
+
+test("inline time edit can update one task duration without changing any other card", () => {
+  const seed = draggableDay();
+  const edited = editDaySessionTime(seed, "bbc", future, 525, 10);
+  assert.equal(edited.start, 525);
+  assert.equal(edited.duration, 10);
+  assert.equal(edited.id, "bbc");
+  assert.equal(seed.sessions.find((x) => x.id === "bbc")?.duration, 15);
+  assert.equal(seed.sessions.find((x) => x.id === "exercise")?.start, 480);
+});
+
+test("inline time edit can change start and duration, persist and reflect revised end", async () => {
+  const seed = draggableDay();
+  const { p } = fixture(seed);
+  const prior = await p.get();
+  const response = await p.editSessionTime("playtorium", {
+    date: future, start: 645, duration: 90,
+    expectedRevision: prior.revision,
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.revision, 1);
+  assert.deepEqual(response.session, {
+    id: "playtorium", date: future, name: "Assignment Playtorium",
+    start: 645, duration: 90, status: "planned",
+  });
+  const reloaded = await p.get();
+  assert.equal(reloaded.sessions.find((x: any) => x.id === "playtorium").start, 645);
+  assert.equal(reloaded.sessions.find((x: any) => x.id === "playtorium").duration, 90);
+  assert.equal(reloaded.sessions.length, 5);
+  assert.deepEqual(reloaded.sessions.filter((x: any) => x.id !== "playtorium"),
+    prior.sessions.filter((x: any) => x.id !== "playtorium"));
+});
+
+test("inline time edit rejects overlap, insufficient breaks and sleep violations atomically", async () => {
+  const seed = draggableDay();
+  const { p } = fixture(seed);
+  const before = await p.get();
+  for (const [start, duration] of [
+    [510, 15], // Exercise ends 08:30; 08:30 collides with rest
+    [525, 35], // BBC overlaps cleaning at 09:15
+    [1290, 120], // Beyond 22:00 bedtime
+  ]) {
+    await assert.rejects(() => p.editSessionTime("bbc", {
+      date: future, start, duration, expectedRevision: 0,
+    }), /เวลาที่แก้ชนกิจกรรมอื่น/);
+  }
+  const after = await p.get();
+  assert.deepEqual(after.sessions, before.sessions);
+  assert.equal(after.revision, before.revision);
+});
+
+test("inline editor rejects completed, fixed, started sessions and wrong date", async () => {
+  const seed = draggableDay();
+  seed.sessions[0].status = "done";
+  seed.sessions[2].fixed = true;
+  const { p } = fixture(seed);
+  await assert.rejects(() => p.editSessionTime("exercise", {
+    date: future, start: 480, duration: 20, expectedRevision: 0,
+  }), /ยังไม่เริ่ม/);
+  await assert.rejects(() => p.editSessionTime("cleaning", {
+    date: future, start: 570, duration: 15, expectedRevision: 0,
+  }), /ยังไม่เริ่ม/);
+  await assert.rejects(() => p.editSessionTime("bbc", {
+    date: "2030-01-07", start: 525, duration: 10, expectedRevision: 0,
+  }));
+  assert.equal((await p.get()).revision, 0);
+  const started = draggableDay();
+  assert.throws(() => editDaySessionTime(
+    started, "exercise", future, 495, 15,
+    Date.parse(future + "T08:05:00+07:00"),
+  ), /ยังไม่เริ่ม/);
+});
+
+test("inline time edit refuses invalid durations and capacity growth", async () => {
+  const seed = draggableDay();
+  const { p } = fixture(seed);
+  assert.throws(() => editDaySessionTime(
+    seed, "bbc", future, 525, 241,
+  ), /5–240/);
+  assert.throws(() => editDaySessionTime(
+    seed, "bbc", future, 525, 0,
+  ), /5–240/);
+  assert.throws(() => editDaySessionTime(
+    seed, "bbc", future, 525, 15,
+  ), /เหมือนเดิม/);
+  const lowCap = draggableDay();
+  lowCap.settings.maxMinutes = 210;
+  // Only 15 minutes for BBC originally; attempting to grow a flexible task
+  // beyond the capacity limit must not be persisted.
+  lowCap.sessions = lowCap.sessions.filter((s) => s.id === "bbc");
+  lowCap.sessions.push({
+    id: "long-study", name: "Study", date: future,
+    start: 600, duration: 200, fixed: false,
+    status: "planned", reminder: 10,
+  });
+  assert.throws(() => editDaySessionTime(lowCap, "bbc", future, 525, 20),
+    /เพดาน/);
+  await assert.rejects(() => p.editSessionTime("bbc", {
+    date: future, start: 525, duration: 241, expectedRevision: 0,
+  }), /5–240/);
+  assert.equal((await p.get()).revision, 0);
+});
+
+test("inline editor rejects optimistic revision conflicts and invalidates old proposals", async () => {
+  const { p } = fixture(draggableDay());
+  const proposed = await p.propose({ date: future, energy: "normal" });
+  await p.editSessionTime("bbc", {
+    date: future, start: 525, duration: 10, expectedRevision: 0,
+  });
+  await assert.rejects(() => p.confirm(proposed.id), /หมดอายุ|ข้อมูลเปลี่ยน/);
+  await assert.rejects(() => p.editSessionTime("bbc", {
+    date: future, start: 525, duration: 5, expectedRevision: 0,
+  }), /ตารางมีการเปลี่ยนแปลงแล้ว/);
+  assert.equal((await p.get()).sessions.find((x: any) => x.id === "bbc").duration, 10);
 });
