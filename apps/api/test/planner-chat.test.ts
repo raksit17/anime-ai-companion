@@ -23,7 +23,7 @@ import {
   explainExtendFollowUp,
   plannerMessages,
 } from "../src/planner/chat-engine";
-import { initial, today, plan } from "../src/planner/engine";
+import { initial, today, plan, swapDaySessions } from "../src/planner/engine";
 const require = createRequire(import.meta.url);
 const { PlannerService } = require("../dist/planner/planner.js");
 const now = Date.parse("2030-01-07T00:00:00+07:00"),
@@ -1972,4 +1972,111 @@ test("five-task free-time request rejects truly insufficient capacity without fa
   assert.match(response.message.content, /ยังจัดกิจกรรมใหม่ทั้ง 5 รายการ/);
   assert.equal(response.proposal, undefined);
   assert.equal((await p.get()).sessions.length, 0);
+});
+
+function draggableDay(date = future) {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.settings.sleep = 1320;
+  state.sessions = [
+    { id: "exercise", name: "ออกกำลังกาย", start: 480, duration: 30 },
+    { id: "bbc", name: "อ่านข่าว BBC", start: 525, duration: 15 },
+    { id: "cleaning", name: "ทำความสะอาดห้อง", start: 555, duration: 15 },
+    { id: "coding", name: "เรียน coding", start: 585, duration: 30 },
+    { id: "playtorium", name: "Assignment Playtorium", start: 630, duration: 120 },
+  ].map((item) => ({
+    ...item, date, goalId: "daily:" + item.id, fixed: false,
+    status: "planned" as const, reminder: 10,
+  }));
+  return state;
+}
+
+test("drag swap exercise with BBC reflows durations and at least 15 minutes rest", () => {
+  const state = draggableDay();
+  const result = swapDaySessions(state, future, "exercise", "bbc");
+  const sorted = result.sessions
+    .filter((item) => item.date === future)
+    .sort((a, b) => a.start - b.start);
+  assert.deepEqual(sorted.map((item) => [item.id, item.start, item.duration]), [
+    ["bbc", 480, 15],
+    ["exercise", 525, 30],
+    ["cleaning", 570, 15],
+    ["coding", 600, 30],
+    ["playtorium", 645, 120],
+  ]);
+  assert.equal(result.changed.length, 5);
+  assert.equal(sorted.reduce((sum, item) => sum + item.duration, 0), 210);
+  for (let i = 1; i < sorted.length; i++)
+    assert.ok(sorted[i].start - (sorted[i - 1].start + sorted[i - 1].duration) >= 15);
+  assert.equal(state.sessions.find((item) => item.id === "exercise")!.start, 480);
+});
+
+test("drag swap through the service persists and survives a new get() without new tasks", async () => {
+  const state = draggableDay();
+  const { p } = fixture(state);
+  const original = await p.get();
+  const response = await p.swapSessions({
+    date: future, sourceId: "exercise", targetId: "bbc",
+    expectedRevision: original.revision,
+  });
+  assert.equal(response.ok, true);
+  assert.equal(response.revision, original.revision + 1);
+  assert.ok(response.changed.some((item: any) =>
+    item.id === "exercise" && item.start === 525));
+  const refreshed = await p.get();
+  assert.equal(refreshed.revision, 1);
+  assert.equal(refreshed.sessions.length, 5);
+  assert.equal(refreshed.sessions.find((item: any) => item.id === "bbc").start, 480);
+  assert.equal(refreshed.sessions.find((item: any) => item.id === "exercise").start, 525);
+  assert.equal((await p.history("yuna")).length, 0);
+});
+
+test("drag swap invalidates pending proposals and rejects stale revisions atomically", async () => {
+  const { p } = fixture(draggableDay());
+  const proposal = await p.propose({ date: future, energy: "normal" });
+  await p.swapSessions({ date: future, sourceId: "exercise",
+    targetId: "bbc", expectedRevision: 0 });
+  await assert.rejects(() => p.confirm(proposal.id), /หมดอายุ|ข้อมูลเปลี่ยน/);
+  await assert.rejects(() => p.swapSessions({ date: future,
+    sourceId: "bbc", targetId: "exercise", expectedRevision: 0 }), /ตารางมีการเปลี่ยนแปลง/);
+  assert.equal((await p.get()).revision, 1);
+  assert.equal((await p.get()).sessions.find((s: any) => s.id === "bbc").start, 480);
+});
+
+test("drag swaps respect completed tasks, fixed appointments and future starts", async () => {
+  const completed = draggableDay();
+  completed.sessions[1].status = "done";
+  assert.throws(() => swapDaySessions(completed, future, "exercise", "bbc"), /ยังไม่เสร็จ/);
+  const fixed = draggableDay();
+  fixed.sessions[1].fixed = true;
+  assert.throws(() => swapDaySessions(fixed, future, "exercise", "cleaning"), /สลับข้าม/);
+  const alreadyStarted = draggableDay();
+  assert.throws(() => swapDaySessions(
+    alreadyStarted, future, "exercise", "bbc",
+    Date.parse(future + "T08:10:00+07:00"),
+  ), /ยังไม่เริ่ม/);
+  const { p } = fixture(completed);
+  await assert.rejects(() => p.swapSessions({ date: future,
+    sourceId: "exercise", targetId: "bbc", expectedRevision: 0 }));
+  assert.equal((await p.get()).revision, 0);
+});
+
+test("drag swap outside bedtime rejects entire mutation, no partial rescheduling", async () => {
+  const seed = draggableDay();
+  seed.settings.sleep = 750; // last existing task ends at 12:30
+  const snapshot = structuredClone(seed.sessions);
+  assert.throws(() => swapDaySessions(seed, future, "exercise", "bbc"), /เวลาตื่น–นอน/);
+  assert.deepEqual(seed.sessions, snapshot);
+  const { p } = fixture(seed);
+  await assert.rejects(() => p.swapSessions({
+    date: future, sourceId: "exercise", targetId: "bbc", expectedRevision: 0,
+  }), /เวลาตื่น–นอน/);
+  assert.deepEqual((await p.get()).sessions, snapshot);
+});
+
+test("drag swap rejects wrong date, same task, and missing targets", () => {
+  const state = draggableDay();
+  assert.throws(() => swapDaySessions(state, future, "exercise", "exercise"), /กิจกรรมอื่น/);
+  assert.throws(() => swapDaySessions(state, future, "exercise", "bad-id"), /ไม่พบสล็อต/);
+  assert.throws(() => swapDaySessions(state, "2020-01-01", "exercise", "bbc"), /วันนี้หรือวันในอนาคต/);
 });
