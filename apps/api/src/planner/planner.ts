@@ -30,6 +30,7 @@ import {
   parseExistingTimeMove,
   parseScheduledAdd,
   parseMultipleNewTasks,
+  parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   completeScheduledAdd,
   simpleAddFromMessage,
@@ -552,7 +553,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
       multipleAdds = durationEdit || shiftedBatch ? undefined :
-        parseMultipleNewTasks(dto.message, dto.date);
+        (parseMultipleNewTasks(dto.message, dto.date) ??
+          parseBatchAlternativeFollowUp(history, dto.message, dto.date));
       timedAdd = durationEdit || multipleAdds || shiftedBatch ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
@@ -689,7 +691,9 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               !snapshot.sessions.some((old) => old.id === item.id));
             batchApprovalCount = added.length;
             output = {
-              reply: "ยูนะลองจัดเวลาให้แล้วนะคะ เป็นแผนตัวอย่างที่ยังไม่บันทึกค่ะ\n" +
+              reply: "ยูนะตรวจตารางจริงแล้วและจัดช่วงเวลาที่ไม่ชนกิจกรรมเดิมให้ค่ะ เป็นแผนตัวอย่างที่ยังไม่บันทึกนะคะ" +
+                (multipleAdds.durations.some((duration) => duration === undefined)
+                  ? " สำหรับงานที่ไม่ได้บอกระยะเวลา ยูนะขอเสนอเริ่มต้นที่ " + suggested + " นาทีค่ะ" : "") + "\n" +
                 added.map((item) =>
                   "• " + item.name + " " + clock(item.start) + "–" +
                   clock(item.start + item.duration) + " (" + item.duration +
