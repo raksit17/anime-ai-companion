@@ -59,10 +59,12 @@ import {
   ProgressDto,
   SettingsDto,
   SwapSessionsDto,
+  EditSessionTimeDto,
 } from "./dto";
 import {
   fits,
   swapDaySessions,
+  editDaySessionTime,
   initial,
   plan,
   Session,
@@ -339,6 +341,34 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       s.sessions.push(event);
       this.changed(s);
       return event;
+    }, true);
+  }
+  editSessionTime(id: string, dto: EditSessionTimeDto) {
+    this.date(dto.date);
+    return this.access((state) => {
+      if (state.revision !== dto.expectedRevision)
+        throw new ConflictException(
+          "ตารางมีการเปลี่ยนแปลงแล้ว กรุณาตรวจตารางล่าสุดและลองแก้เวลาอีกครั้ง",
+        );
+      let edited: Session;
+      try {
+        edited = editDaySessionTime(
+          state, id, dto.date, dto.start, dto.duration, Date.now(),
+        );
+      } catch (error) {
+        throw new ConflictException((error as Error).message);
+      }
+      state.sessions = state.sessions.map((item) =>
+        item.id === id ? edited : item);
+      this.changed(state);
+      return {
+        ok: true, revision: state.revision,
+        session: {
+          id: edited.id, date: edited.date, name: edited.name,
+          start: edited.start, duration: edited.duration,
+          status: edited.status,
+        },
+      };
     }, true);
   }
   swapSessions(dto: SwapSessionsDto) {
@@ -1266,6 +1296,11 @@ class PlannerController {
   }
   @Post("events") event(@Body() d: EventDto) {
     return this.planner.event(d);
+  }
+  @Patch("sessions/:id/schedule") editSessionTime(
+    @Param("id") id: string, @Body() dto: EditSessionTimeDto,
+  ) {
+    return this.planner.editSessionTime(id, dto);
   }
   @Post("sessions/reorder") reorder(@Body() dto: SwapSessionsDto) {
     return this.planner.swapSessions(dto);
