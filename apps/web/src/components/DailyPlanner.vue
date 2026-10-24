@@ -63,7 +63,11 @@ const date = ref(today()),
   sessions = ref<Session[]>([]),
   capacityOverrides = ref<Record<string, number>>({}),
   highlightedSession = ref(""),
-  deletingSession = ref<Session | null>(null);
+  deletingSession = ref<Session | null>(null),
+  dragSourceId = ref(""),
+  dropTargetId = ref(""),
+  reorderMessage = ref(""),
+  scheduleRevision = ref(0);
 const input = ref(""),
   error = ref(""),
   busy = ref(false),
@@ -148,6 +152,9 @@ const label = (s: string) =>
   ] ?? s;
 function select(d: string) {
   highlightedSession.value = "";
+  dragSourceId.value = "";
+  dropTargetId.value = "";
+  reorderMessage.value = "";
   date.value = d;
   month.value = d.slice(0, 7);
 }
@@ -159,6 +166,7 @@ function changeMonth(delta: number) {
 async function refresh() {
   const state = await api("/planner");
   sessions.value = state.sessions;
+  scheduleRevision.value = state.revision;
   settings.value = state.settings;
   capacityOverrides.value = state.capacityOverrides ?? {};
 }
@@ -292,6 +300,82 @@ function chooseFollowUp(option: PlannerFollowUp) {
     void send(option.prompt);
   }
 }
+function canReorder(session: Session) {
+  return session.date === date.value &&
+    session.status === "planned" && !session.fixed &&
+    Date.parse(`${session.date}T00:00:00+07:00`) +
+      session.start * 60000 > now.value;
+}
+function eligibleNeighbor(session: Session, direction: -1 | 1) {
+  const items = daySessions.value.filter(canReorder);
+  const index = items.findIndex((item) => item.id === session.id);
+  return index < 0 ? undefined : items[index + direction];
+}
+function dragStart(event: DragEvent, session: Session) {
+  if (busy.value || !canReorder(session)) {
+    event.preventDefault();
+    return;
+  }
+  dragSourceId.value = session.id;
+  dropTargetId.value = "";
+  reorderMessage.value = "";
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", session.id);
+  }
+}
+function dragOver(event: DragEvent, target: Session) {
+  if (busy.value || !dragSourceId.value ||
+      dragSourceId.value === target.id || !canReorder(target)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  dropTargetId.value = target.id;
+}
+function dragEnd() {
+  dragSourceId.value = "";
+  dropTargetId.value = "";
+}
+async function swapSessions(sourceId: string, targetId: string) {
+  if (busy.value || sourceId === targetId) return;
+  const source = daySessions.value.find((item) => item.id === sourceId);
+  const target = daySessions.value.find((item) => item.id === targetId);
+  if (!source || !target || !canReorder(source) || !canReorder(target)) return;
+  busy.value = true;
+  error.value = "";
+  reorderMessage.value = "";
+  try {
+    const response = await api<{ changed: Session[] }>(
+      "/planner/sessions/reorder", "POST",
+      {
+        date: date.value, sourceId, targetId,
+        expectedRevision: scheduleRevision.value,
+      },
+    );
+    proposal.value = undefined;
+    await refresh();
+    highlightedSession.value = sourceId;
+    reorderMessage.value =
+      `สลับลำดับ ${source.name} กับ ${target.name} แล้ว · ปรับเวลา ${response.changed.length} กิจกรรมตามเวลาพัก`;
+  } catch (e) {
+    error.value = String(e);
+    try { await refresh(); } catch { /* Keep the actual error visible. */ }
+  } finally {
+    busy.value = false;
+    dragEnd();
+  }
+}
+function dropOn(event: DragEvent, target: Session) {
+  event.preventDefault();
+  const sourceId = dragSourceId.value;
+  dragEnd();
+  if (sourceId && sourceId !== target.id && canReorder(target))
+    void swapSessions(sourceId, target.id);
+}
+function swapWithNeighbor(session: Session, direction: -1 | 1) {
+  const neighbor = eligibleNeighbor(session, direction);
+  if (neighbor) void swapSessions(session.id, neighbor.id);
+}
+
 async function removeSession(session: Session) {
   if (busy.value || deletingSession.value?.id !== session.id) return;
   busy.value = true;
@@ -389,6 +473,10 @@ watch(advanced, (value) => {
     </header>
     <p v-if="error" role="alert" class="error">
       {{ error }} <button @click="error = ''">ปิด</button>
+    </p>
+    <p v-if="reorderMessage" class="reorder-success" role="status">
+      {{ reorderMessage }}
+      <button type="button" @click="reorderMessage = ''" aria-label="ปิดข้อความ">×</button>
     </p>
     <div v-if="reminders.length" class="reminder" role="status">
       🔔 {{ reminders[0].name }} · {{ clock(reminders[0].start) }}
@@ -493,12 +581,22 @@ watch(advanced, (value) => {
             ใช้ตัวอย่างนี้
           </button>
         </div>
+        <p v-if="daySessions.some(canReorder)" class="reorder-hint">
+          <span aria-hidden="true">⠿</span> จับที่ไอคอนเพื่อลากสลับลำดับกิจกรรม หรือใช้ปุ่ม ↑ ↓
+          ระบบจะปรับเวลาและเว้นพักให้โดยอัตโนมัติ
+        </p>
         <ol class="timeline">
           <li
             v-for="(s, i) in daySessions"
             :id="`planner-session-${s.id}`"
             :key="s.id"
-            :class="[s.status, { 'just-applied': highlightedSession === s.id }]"
+            :class="[s.status, {
+              'just-applied': highlightedSession === s.id,
+              'reorder-dragging': dragSourceId === s.id,
+              'reorder-target': dropTargetId === s.id,
+            }]"
+            @dragover="dragOver($event, s)"
+            @drop="dropOn($event, s)"
           >
             <div class="time">
               <strong>{{ clock(s.start) }}</strong
@@ -506,8 +604,36 @@ watch(advanced, (value) => {
             </div>
             <div class="task">
               <div class="task-title">
-                <strong>{{ s.name }}</strong
-                ><span class="status">{{ label(s.status) }}</span>
+                <div class="task-name"><strong>{{ s.name }}</strong></div>
+                <div class="task-heading-tools">
+                  <template v-if="canReorder(s)">
+                    <button
+                      class="reorder-handle"
+                      type="button"
+                      draggable="true"
+                      :disabled="busy"
+                      :aria-label="`ลากสลับลำดับกิจกรรม ${s.name}`"
+                      title="จับลากไปวางบนอีกกิจกรรมเพื่อสลับลำดับ"
+                      @dragstart="dragStart($event, s)"
+                      @dragend="dragEnd"
+                    >⠿</button>
+                    <button
+                      class="reorder-arrow"
+                      type="button"
+                      :disabled="busy || !eligibleNeighbor(s, -1)"
+                      :aria-label="`สลับ ${s.name} กับกิจกรรมก่อนหน้า`"
+                      @click="swapWithNeighbor(s, -1)"
+                    >↑</button>
+                    <button
+                      class="reorder-arrow"
+                      type="button"
+                      :disabled="busy || !eligibleNeighbor(s, 1)"
+                      :aria-label="`สลับ ${s.name} กับกิจกรรมถัดไป`"
+                      @click="swapWithNeighbor(s, 1)"
+                    >↓</button>
+                  </template>
+                  <span class="status">{{ label(s.status) }}</span>
+                </div>
               </div>
               <p>
                 {{ s.duration }} นาที <span v-if="s.fixed">· นัดคงที่</span>
@@ -898,6 +1024,53 @@ watch(advanced, (value) => {
   justify-content: space-between;
   align-items: flex-start;
 }
+.task-name {
+  flex: 1;
+  min-width: 0;
+}
+.task-heading-tools {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+.reorder-handle,
+.reorder-arrow {
+  min-width: 25px;
+  min-height: 27px;
+  border: 1px solid #d9e2d3;
+  border-radius: 7px;
+  padding: 3px;
+  color: #63795c;
+  background: #f4f7f1;
+  font-size: 13px;
+  line-height: 1;
+}
+.reorder-handle { cursor: grab; }
+.reorder-handle:active { cursor: grabbing; }
+.reorder-arrow:disabled { opacity: 0.3; cursor: not-allowed; }
+.reorder-target .task {
+  border: 2px dashed #6f9367;
+  background: #f0f7e9;
+}
+.reorder-dragging { opacity: 0.55; }
+.reorder-hint {
+  color: #63755c;
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 12px 0 0;
+}
+.reorder-success {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 14px;
+  color: #425f37;
+  background: #eef5e8;
+  font-size: 12px;
+  border-radius: 8px;
+}
+.reorder-success button { color: inherit; font-size: 15px; }
 .task-title strong {
   font-size: 14px;
   overflow-wrap: anywhere;
