@@ -18,6 +18,7 @@ import {
   parseTimeDurationEdit,
   parseExistingTimeMove,
   parseExerciseWithBreaks,
+  previewInsertionMinutes,
   normalizePlannerActions,
   freeStartForAdd,
   explainExtendFollowUp,
@@ -2304,4 +2305,128 @@ test("overdue BBC move still rejects collisions without moving other sessions", 
     /เลื่อนไป 08:55 ไม่ได้/);
   assert.equal(state.sessions[0].start, 480);
   assert.equal(state.sessions[1].start, 540);
+});
+
+const screenshotDay = "2026-10-25";
+const screenshotMorning = Date.parse("2026-10-25T08:44:00+07:00");
+function insertExerciseSeed(date = screenshotDay) {
+  const state = initial();
+  state.settings.maxMinutes = 240;
+  state.settings.sleep = 1320;
+  state.sessions = [
+    { id: "bbc", name: "อ่านข่าว bbc", start: 540, duration: 15 },
+    { id: "clean", name: "ทำความสะอาดห้อง", start: 615, duration: 15 },
+    { id: "assignment", name: "ทำ Assignment Playtorium", start: 915, duration: 120 },
+    { id: "coding", name: "เรียน coding", start: 1290, duration: 30 },
+  ].map((task) => ({
+    ...task, goalId: "daily:" + task.id, date,
+    status: "planned" as const, fixed: false, reminder: 10,
+  }));
+  return state;
+}
+
+test("availability question calculates 30 usable exercise minutes between BBC and cleaning", () => {
+  const state = insertExerciseSeed();
+  const initialState = structuredClone(state);
+  const inquiry = previewInsertionMinutes(
+    state, screenshotDay, "ช่วง 9 โมง แทรกออกกำลังกายได้ไหม", screenshotMorning,
+  );
+  assert.deepEqual(inquiry, {
+    date: screenshotDay, name: "ออกกำลังกาย", hour: 9,
+    start: 570, duration: 30, remainingCapacity: 60, breakMinutes: 15,
+  });
+  assert.deepEqual(state, initialState);
+});
+
+test("insertion availability observes real current minute, daily cap and minimum breaks", () => {
+  const message = "ช่วง 9 โมง แทรกออกกำลังกายได้กี่นาที";
+  const seed = insertExerciseSeed();
+  assert.equal(previewInsertionMinutes(
+    seed, screenshotDay, message,
+    Date.parse("2026-10-25T09:41:00+07:00"),
+  )?.duration, 15);
+  assert.equal(previewInsertionMinutes(
+    seed, screenshotDay, message,
+    Date.parse("2026-10-25T09:57:00+07:00"),
+  )?.duration, 0);
+  const cap = insertExerciseSeed();
+  cap.settings.maxMinutes = 190;
+  assert.equal(previewInsertionMinutes(
+    cap, screenshotDay, message, screenshotMorning,
+  )?.duration, 10);
+  const noCapacity = insertExerciseSeed();
+  noCapacity.settings.maxMinutes = 180;
+  const result = previewInsertionMinutes(
+    noCapacity, screenshotDay, message, screenshotMorning,
+  );
+  assert.equal(result?.duration, 0);
+  assert.match(result?.reason ?? "", /เพดาน/);
+  const tighter = insertExerciseSeed();
+  tighter.settings.breakMinutes = 20;
+  assert.equal(previewInsertionMinutes(
+    tighter, screenshotDay, message, screenshotMorning,
+  )?.duration, 20);
+});
+
+test("question is read-only; explicit insert requests and non-questions are not intercepted", () => {
+  const seed = insertExerciseSeed();
+  assert.equal(previewInsertionMinutes(
+    seed, screenshotDay, "เพิ่มออกกำลังกายเวลา 09:30 นาน 30 นาที",
+    screenshotMorning,
+  ), undefined);
+  assert.equal(previewInsertionMinutes(
+    seed, screenshotDay, "ย้ายอ่านข่าว BBC ไปเวลา 09:30",
+    screenshotMorning,
+  ), undefined);
+  assert.equal(previewInsertionMinutes(
+    seed, screenshotDay, "ช่วง 9 โมงว่างไหม",
+    screenshotMorning,
+  ), undefined);
+  assert.equal(previewInsertionMinutes(
+    seed, screenshotDay, "ช่วง 9 โมง แทรกออกกำลังกายได้ไหม",
+    Date.parse("2026-10-26T08:00:00+07:00"),
+  ), undefined);
+});
+
+test("Yuna answers insertion minutes from the actual timetable without invoking AI or saving anything", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const seed = insertExerciseSeed(date);
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => {
+    throw new Error("verified availability should not depend on Ollama's guessing");
+  };
+  const request = {
+    ...dto, date, requestId: "insert-exercise-preview-9am",
+    message: "ช่วง 9 โมง แทรกออกกำลังกายได้ไหม", autoApply: true,
+  };
+  const reply = await p.chat(request);
+  assert.match(reply.message.content, /สูงสุด 30 นาที/);
+  assert.match(reply.message.content, /09:30–10:00/);
+  assert.match(reply.message.content, /ไม่ได้เพิ่มลงตาราง/);
+  assert.equal(reply.message.outcome, "คำตอบจาก ยูนะ");
+  assert.equal(reply.message.appliedChanges, undefined);
+  assert.equal(reply.proposal, undefined);
+  assert.deepEqual((await p.get()).sessions, seed.sessions);
+  assert.equal(reply.message.followUps?.[0]?.label, "เพิ่ม 30 นาที");
+  assert.match(reply.message.followUps?.[0]?.prompt ?? "",
+    /09:30 นาน 30 นาที/);
+  const retry = await p.chat(request);
+  assert.equal(retry.message.id, reply.message.id);
+  assert.deepEqual((await p.get()).sessions, seed.sessions);
+});
+
+test("Yuna explains no available insertion minutes when daily workload is full", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const seed = insertExerciseSeed(date);
+  seed.settings.maxMinutes = 180;
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => { throw new Error("must be deterministic"); };
+  const reply = await p.chat({
+    ...dto, date, requestId: "exercise-hour-no-capacity",
+    message: "ช่วง 9 โมง แทรกออกกำลังกายได้กี่นาที",
+  });
+  assert.match(reply.message.content, /ไม่ได้แม้แต่ 5 นาที/);
+  assert.match(reply.message.content, /เพดาน/);
+  assert.equal(reply.message.appliedChanges, undefined);
+  assert.deepEqual((await p.get()).sessions, seed.sessions);
 });
