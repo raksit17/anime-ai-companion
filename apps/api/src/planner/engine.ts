@@ -105,9 +105,12 @@ export function editDaySessionTime(
   const existing = state.sessions.find((task) => task.id === id);
   if (!existing || existing.date !== date || !validDate(date))
     throw new Error("ไม่พบกิจกรรมในวันที่เลือก");
-  if (existing.fixed || existing.status !== "planned" ||
-      timestamp(existing.date, existing.start) <= now)
-    throw new Error("แก้เวลาได้เฉพาะกิจกรรมยืดหยุ่นที่ยังไม่เริ่ม");
+  if (existing.fixed || existing.status !== "planned")
+    throw new Error("แก้เวลาได้เฉพาะกิจกรรมยืดหยุ่นที่ยังรอทำ");
+  // A session whose clock time passed but is still "planned" is overdue,
+  // not completed. Allow moving it to the future while protecting history.
+  if (timestamp(date, start) <= now)
+    throw new Error("ต้องเลือกเวลาเริ่มใหม่ที่ยังมาไม่ถึง");
   if (!Number.isInteger(start) || start < 0 || start > 1439 ||
       !Number.isInteger(duration) || duration < 5 || duration > 240)
     throw new Error("กรุณาระบุเวลาเริ่มและระยะเวลา 5–240 นาทีให้ถูกต้อง");
