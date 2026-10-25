@@ -554,7 +554,7 @@ export function parseExistingTimeMove(
   const name = input.replace(verb, "")
     .replace(clocks[0][0], " ")
     .replace(/^(?:งาน|กิจกรรม)\s*/u, "")
-    .replace(/\s*(?:(?:ไป(?:ที่)?|เป็น)\s*)?(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?|ที่)|ไป|เป็น|ให้|น\.?)\s*$/u, "")
+    .replace(/\s*(?:(?:(?:ไป(?:ที่)?|เป็น)\s*)?(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?|ที่)|ไป|เป็น|ให้|น\.?)\s*$/u, "")
     .trim();
   const normalize = (value: string) =>
     value.toLocaleLowerCase().replace(/\s+/gu, "");
