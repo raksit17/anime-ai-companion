@@ -2430,3 +2430,107 @@ test("Yuna explains no available insertion minutes when daily workload is full",
   assert.equal(reply.message.appliedChanges, undefined);
   assert.deepEqual((await p.get()).sessions, seed.sessions);
 });
+
+test("the exact old suggested Add 30 button is parsed as add, not edit", () => {
+  const quoted =
+    "เพิ่มงาน ออกกำลังกายได้กี่นาที วันที่ 2026-10-25 เวลา 09:30 นาน 30 นาที";
+  const ref = Date.parse("2026-10-25T08:44:00+07:00");
+  const seed = insertExerciseSeed();
+  assert.equal(parseTimeDurationEdit(seed, screenshotDay, quoted, ref), undefined);
+  assert.deepEqual(parseScheduledAdd(quoted, screenshotDay, ref)?.command, {
+    type: "add", name: "ออกกำลังกาย", date: screenshotDay,
+    start: 570, duration: 30, fixed: false,
+  });
+  const added = executeCommands(
+    seed, [parseScheduledAdd(quoted, screenshotDay, ref)!.command!],
+    screenshotDay, ref,
+  );
+  assert.equal(added.sessions.length, seed.sessions.length + 1);
+  assert.equal(added.sessions.find((x) => x.name === "ออกกำลังกาย")?.start, 570);
+  assert.equal(added.sessions.filter((x) => x.id === "bbc").length, 1);
+});
+
+test("question tails in combined insertion questions never leak into the proposed activity name", () => {
+  const seed = insertExerciseSeed();
+  for (const question of [
+    "ช่วง 9 โมง แทรกออกกำลังกายได้ไหม",
+    "ช่วง 9 โมง แทรกออกกำลังกายได้กี่นาที",
+    "ช่วง 9 โมง แทรกออกกำลังกายได้กี่นาทีได้ไหม",
+  ]) {
+    const inquiry = previewInsertionMinutes(seed, screenshotDay, question, screenshotMorning);
+    assert.equal(inquiry?.name, "ออกกำลังกาย", question);
+    assert.equal(inquiry?.duration, 30, question);
+  }
+});
+
+test("following the Add 30 minutes button actually creates the intended activity and keeps all old sessions", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const seed = insertExerciseSeed(date);
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => {
+    throw new Error("explicit button-generated add must bypass Ollama");
+  };
+  const inquiry = await p.chat({
+    ...dto, date, requestId: "ask-insert-max", autoApply: true,
+    message: "ช่วง 9 โมง แทรกออกกำลังกายได้กี่นาที",
+  });
+  const followUp = inquiry.message.followUps?.find((x: any) => x.label === "เพิ่ม 30 นาที");
+  assert.ok(followUp?.prompt);
+  assert.match(followUp!.prompt!, new RegExp("เพิ่มงาน ออกกำลังกาย วันที่ " + date));
+  assert.doesNotMatch(followUp!.prompt!, /ได้กี่นาที/);
+  assert.deepEqual((await p.get()).sessions, seed.sessions);
+  const added = await p.chat({
+    ...dto, date, requestId: "click-add-thirty", autoApply: true,
+    message: followUp!.prompt!,
+  });
+  assert.equal(added.message.outcome, "บันทึกตารางแล้ว");
+  assert.deepEqual(added.message.appliedChanges?.map((x: any) => ({
+    name: x.name, start: x.start, duration: x.duration, kind: x.kind,
+  })), [{ name: "ออกกำลังกาย", start: 570, duration: 30, kind: "created" }]);
+  const persisted = await p.get();
+  assert.equal(persisted.sessions.length, seed.sessions.length + 1);
+  assert.deepEqual(persisted.sessions.filter((x: any) => x.id !== added.message.appliedChanges?.[0]?.id),
+    seed.sessions);
+  const retry = await p.chat({
+    ...dto, date, requestId: "click-add-thirty", autoApply: true,
+    message: followUp!.prompt!,
+  });
+  assert.equal(retry.message.id, added.message.id);
+  assert.equal((await p.get()).sessions.length, seed.sessions.length + 1);
+});
+
+test("the legacy malformed Add 30 prompt still adds a cleanly named exercise activity", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const seed = insertExerciseSeed(date);
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => {
+    throw new Error("legacy explicit add must bypass Ollama's edit parser");
+  };
+  const response = await p.chat({
+    ...dto, date, requestId: "legacy-bad-button",
+    message: "เพิ่มงาน ออกกำลังกายได้กี่นาที วันที่ " + date +
+      " เวลา 09:30 นาน 30 นาที",
+  });
+  assert.equal(response.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(response.message.appliedChanges?.[0]?.name, "ออกกำลังกาย");
+  assert.equal((await p.get()).sessions.length, seed.sessions.length + 1);
+});
+
+test("the suggested exact slot is rejected if the calendar becomes occupied, without mutating the timetable", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const seed = insertExerciseSeed(date);
+  seed.sessions.push({
+    id: "meeting", date, name: "ประชุม", start: 570, duration: 30,
+    status: "planned", fixed: true, reminder: 10,
+  });
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => {
+    throw new Error("conflicting exact-time add should not need Ollama");
+  };
+  const response = await p.chat({
+    ...dto, date, requestId: "stale-suggested-slot",
+    message: "เพิ่มงาน ออกกำลังกาย วันที่ " + date + " เวลา 09:30 นาน 30 นาที",
+  });
+  assert.match(response.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.deepEqual((await p.get()).sessions, seed.sessions);
+});
