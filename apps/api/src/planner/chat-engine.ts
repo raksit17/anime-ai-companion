@@ -533,7 +533,7 @@ export function parseExistingTimeMove(
   if (!verb.test(input)) {
     // Also support "Coding เลื่อนไป 22:00" (task name before the verb).
     const reverse = input.match(
-      /^(.+?)\s*(?:เลื่อนไป|เลื่อน|ย้ายไป|ย้าย|ขยับไป|ขยับ)\s*(\d{1,2}:\d{2})\s*$/u,
+      /^(.+?)\s*(?:เลื่อนไป|เลื่อน|ย้ายไป|ย้าย|ขยับไป|ขยับ)\s*(?:ที่|เวลา|ช่วง|ตอน)?\s*(\d{1,2}:\d{2})\s*$/u,
     );
     if (!reverse) return undefined;
     input = "เลื่อน" + reverse[1].trim() + " " + reverse[2];
@@ -548,10 +548,13 @@ export function parseExistingTimeMove(
   if (!validDate(date) || hours > 23 || minutes > 59)
     return { reason: "วันที่หรือเวลาเริ่มใหม่ไม่ถูกต้อง" };
   const start = hours * 60 + minutes;
+  // Strip the WHOLE trailing time preposition before resolving a task
+  // name. The previous one-token regex matched only "เวลา" in "ไปเวลา",
+  // leaving "อ่านข่าว BBC ไป" and falsely reporting "task not found".
   const name = input.replace(verb, "")
     .replace(clocks[0][0], " ")
     .replace(/^(?:งาน|กิจกรรม)\s*/u, "")
-    .replace(/\s*(?:ไป|ไปที่|เป็น|เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?|ให้|ที่|น\.?)\s*$/u, "")
+    .replace(/\s*(?:(?:(?:ไป(?:ที่)?|เป็น)\s*)?(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?|ที่)|ไป|เป็น|ให้|น\.?)\s*$/u, "")
     .trim();
   const normalize = (value: string) =>
     value.toLocaleLowerCase().replace(/\s+/gu, "");
@@ -564,6 +567,18 @@ export function parseExistingTimeMove(
       ? 'ไม่พบกิจกรรม "' + name + '" วันที่ ' + date + " กรุณาเลือกวันหรือชื่อให้ตรงกับตาราง"
       : 'พบกิจกรรม "' + name + '" มากกว่าหนึ่งรายการ กรุณาระบุสล็อตให้ชัดเจน' };
   const task = matching[0];
+  if (task.status !== "planned")
+    return { reason: "กิจกรรม " + task.name +
+      " บันทึกผลแล้ว (" + task.status +
+      ") จึงไม่สามารถเลื่อนกิจกรรมนี้ได้" };
+  if (task.fixed)
+    return { reason: "กิจกรรม " + task.name +
+      " ล็อกเวลาอยู่ จึงไม่สามารถเลื่อนจากแชตได้" };
+  // An overdue item can still be planned: permit the user to reschedule
+  // it into a future free slot. No done/skipped history is ever rewritten.
+  if (timestamp(date, start) < now)
+    return { reason: "เวลาใหม่ " + formatMinutes(start) +
+      " ผ่านไปแล้ว กรุณาเลือกเวลาที่ยังมาไม่ถึง" };
   return { command: {
     type: "edit", id: task.id, date, start, duration: task.duration,
     preserveOtherSlots: true,
@@ -1159,8 +1174,11 @@ export function executeCommands(
       if (s.fixed) throw new Error("นัดนี้ล็อกเวลาไว้ กรุณาแก้ผ่านการตั้งค่านัด");
       if (s.date !== date)
         throw new Error("การแก้เวลาและระยะเวลาต้องอยู่วันเดียวกับกิจกรรมเดิม");
-      if (timestamp(s.date, s.start) < now)
-        throw new Error("กิจกรรมเดิมเริ่มไปแล้ว ไม่สามารถแก้เวลาได้");
+      // "planned" does not imply it was completed or started. An
+      // overdue-but-uncompleted task can be explicitly moved forward;
+      // fits() still forbids destinations in the past or conflicting slots.
+      if (timestamp(date, a.start!) < now)
+        throw new Error("เวลาเริ่มใหม่ผ่านไปแล้ว กรุณาเลือกเวลาในอนาคต");
       const edited: Session = {
         ...s, date, start: a.start!, duration: a.duration!,
         status: "planned", notified: false,

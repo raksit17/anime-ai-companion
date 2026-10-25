@@ -2138,21 +2138,26 @@ test("inline editor rejects completed, fixed, started sessions and wrong date", 
   const { p } = fixture(seed);
   await assert.rejects(() => p.editSessionTime("exercise", {
     date: future, start: 480, duration: 20, expectedRevision: 0,
-  }), /ยังไม่เริ่ม/);
+  }), /ยังรอทำ/);
   await assert.rejects(() => p.editSessionTime("cleaning", {
     date: future, start: 570, duration: 15, expectedRevision: 0,
-  }), /ยังไม่เริ่ม/);
+  }), /ยังรอทำ/);
   const otherValidDate = new Date(Date.parse(future) + 86400000)
     .toISOString().slice(0, 10);
   await assert.rejects(() => p.editSessionTime("bbc", {
     date: otherValidDate, start: 525, duration: 10, expectedRevision: 0,
   }), /ไม่พบกิจกรรมในวันที่เลือก/);
   assert.equal((await p.get()).revision, 0);
-  const started = draggableDay();
+  const overdue = draggableDay();
+  const atEightOhFive = Date.parse(future + "T08:05:00+07:00");
+  const movedOverdue = editDaySessionTime(
+    overdue, "exercise", future, 495, 15, atEightOhFive,
+  );
+  assert.equal(movedOverdue.start, 495);
+  assert.equal(movedOverdue.status, "planned");
   assert.throws(() => editDaySessionTime(
-    started, "exercise", future, 495, 15,
-    Date.parse(future + "T08:05:00+07:00"),
-  ), /ยังไม่เริ่ม/);
+    overdue, "exercise", future, 480, 15, atEightOhFive,
+  ), /ยังมาไม่ถึง/);
 });
 
 test("inline time edit refuses invalid durations and capacity growth", async () => {
@@ -2196,4 +2201,107 @@ test("inline editor rejects optimistic revision conflicts and invalidates old pr
     date: future, start: 525, duration: 5, expectedRevision: 0,
   }), /ตารางมีการเปลี่ยนแปลงแล้ว/);
   assert.equal((await p.get()).sessions.find((x: any) => x.id === "bbc").duration, 10);
+});
+
+test("the exact BBC screenshot phrase strips ไปเวลา and resolves the existing activity", () => {
+  const date = "2026-10-25";
+  const atEightFortyFour = Date.parse(date + "T08:44:00+07:00");
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "bbc", name: "อ่านข่าว bbc", date, start: 480, duration: 15,
+      fixed: false, status: "planned", reminder: 10 },
+    { id: "clean", name: "ทำความสะอาดห้อง", date, start: 615, duration: 15,
+      fixed: false, status: "planned", reminder: 10 },
+    { id: "assignment", name: "Assignment Playtorium", date, start: 915, duration: 120,
+      fixed: false, status: "planned", reminder: 10 },
+    { id: "coding", name: "เรียน coding", date, start: 1290, duration: 30,
+      fixed: false, status: "planned", reminder: 10 },
+  ];
+  const parsed = parseExistingTimeMove(
+    state, date, "เลื่อน อ่านข่าว bbc ไปเวลา 08:55", atEightFortyFour,
+  );
+  assert.deepEqual(parsed?.command, {
+    type: "edit", id: "bbc", date, start: 535, duration: 15,
+    preserveOtherSlots: true,
+  });
+  const next = executeCommands(
+    state, [parsed!.command!], date, atEightFortyFour,
+  );
+  assert.equal(next.sessions.length, 4);
+  assert.deepEqual(next.sessions.find((x) => x.id === "bbc"), {
+    ...state.sessions[0], start: 535, notified: false,
+  });
+  assert.deepEqual(next.sessions.slice(1), state.sessions.slice(1));
+  assert.equal(state.sessions[0].start, 480);
+});
+
+test("time-only rescheduling resolves common Thai prepositions as clock markers", () => {
+  const date = new Date(Date.parse(today()) + 86400000)
+    .toISOString().slice(0, 10);
+  const seed = timeOnlyMoveDay(date);
+  seed.sessions[0].name = "อ่านข่าว BBC";
+  for (const phrase of [
+    "เลื่อน อ่านข่าว bbc ไปเวลา 16:00",
+    "เลื่อน อ่านข่าว BBC เป็นเวลา 16:00",
+    "ขอย้าย อ่านข่าว BBC ไปที่ 16:00",
+    "เปลี่ยนเวลา อ่านข่าว BBC เป็น 16:00",
+    "อ่านข่าว BBC เลื่อนไปเวลา 16:00",
+  ]) {
+    const result = parseExistingTimeMove(seed, date, phrase);
+    assert.equal(result?.command?.id, "code", phrase);
+    assert.equal(result?.command?.start, 960, phrase);
+    assert.equal(result?.command?.duration, 60, phrase);
+  }
+});
+
+test("overdue planned work is movable to future, but completed and skipped work is protected", () => {
+  const date = "2026-10-25";
+  const now = Date.parse(date + "T08:44:00+07:00");
+  const seed = initial();
+  seed.settings.maxMinutes = 720;
+  seed.sessions = [{
+    id: "bbc", name: "อ่านข่าว BBC", date, start: 480, duration: 15,
+    fixed: false, status: "planned", reminder: 10,
+  }];
+  const request = "เลื่อน อ่านข่าว BBC ไปเวลา 08:55";
+  const cmd = parseExistingTimeMove(seed, date, request, now)!.command!;
+  assert.equal(executeCommands(seed, [cmd], date, now).sessions[0].start, 535);
+  assert.equal(editDaySessionTime(seed, "bbc", date, 535, 15, now).start, 535);
+  assert.match(parseExistingTimeMove(seed, date,
+    "เลื่อน อ่านข่าว BBC ไปเวลา 08:35", now)?.reason ?? "", /ผ่านไปแล้ว/);
+  assert.throws(() => editDaySessionTime(seed, "bbc", date, 520, 15, now),
+    /ยังมาไม่ถึง/);
+  for (const status of ["done", "skipped"] as const) {
+    const blocked = structuredClone(seed);
+    blocked.sessions[0].status = status;
+    const parse = parseExistingTimeMove(blocked, date, request, now);
+    assert.match(parse?.reason ?? "", /บันทึกผลแล้ว/);
+    assert.throws(() => editDaySessionTime(blocked, "bbc", date, 535, 15, now),
+      /ยังรอทำ/);
+    assert.deepEqual(blocked.sessions[0], { ...seed.sessions[0], status });
+  }
+  const fixed = structuredClone(seed);
+  fixed.sessions[0].fixed = true;
+  assert.match(parseExistingTimeMove(fixed, date, request, now)?.reason ?? "", /ล็อกเวลา/);
+});
+
+test("overdue BBC move still rejects collisions without moving other sessions", () => {
+  const date = "2026-10-25";
+  const now = Date.parse(date + "T08:44:00+07:00");
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "bbc", name: "อ่านข่าว bbc", date, start: 480,
+      duration: 15, status: "planned", fixed: false, reminder: 10 },
+    { id: "meeting", name: "ประชุม", date, start: 540,
+      duration: 30, status: "planned", fixed: true, reminder: 10 },
+  ];
+  const cmd = parseExistingTimeMove(
+    state, date, "เลื่อน อ่านข่าว bbc ไปเวลา 08:55", now,
+  )!.command!;
+  assert.throws(() => executeCommands(state, [cmd], date, now),
+    /เลื่อนไป 08:55 ไม่ได้/);
+  assert.equal(state.sessions[0].start, 480);
+  assert.equal(state.sessions[1].start, 540);
 });
