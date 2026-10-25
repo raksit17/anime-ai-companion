@@ -69,7 +69,6 @@ import {
   editDaySessionTime,
   finishSessionNow,
   releasedEarlyMinutes,
-  occupiedMinutes,
   initial,
   plan,
   Session,
