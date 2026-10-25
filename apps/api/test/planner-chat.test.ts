@@ -2450,6 +2450,21 @@ test("the exact old suggested Add 30 button is parsed as add, not edit", () => {
   assert.equal(added.sessions.filter((x) => x.id === "bbc").length, 1);
 });
 
+test("exact-time add parses 09:30 นาน 30 นาที without consuming the น of นาน", () => {
+  const date = "2026-10-25";
+  const now = Date.parse("2026-10-25T08:44:00+07:00");
+  for (const message of [
+    "เพิ่มงาน ออกกำลังกาย วันที่ 2026-10-25 เวลา 09:30 นาน 30 นาที",
+    "เพิ่มงาน ออกกำลังกาย วันที่ 2026-10-25 เวลา 09:30นาน 30 นาที",
+    "เพิ่มงาน ออกกำลังกาย วันที่ 2026-10-25 เวลา 09:30 น. นาน 30 นาที",
+  ]) {
+    assert.deepEqual(parseScheduledAdd(message, date, now)?.command, {
+      type: "add", name: "ออกกำลังกาย", date,
+      start: 570, duration: 30, fixed: false,
+    }, message);
+  }
+});
+
 test("question tails in combined insertion questions never leak into the proposed activity name", () => {
   const seed = insertExerciseSeed();
   for (const question of [
