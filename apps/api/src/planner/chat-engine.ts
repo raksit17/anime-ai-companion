@@ -66,6 +66,11 @@ export function parseScheduledAdd(
   // A clock is essential to the exact-time flow; untimed requests keep
   // their existing flexible-add/chat interpretation.
   if (!/\d{1,2}:\d{2}/u.test(text)) return undefined;
+  // Questions must never be interpreted as a command to persist, even when
+  // they mention an exact clock.
+  if (/(?:ได้ไหม|ได้หรือเปล่า|ได้กี่นาที|พอไหม|ว่างไหม|\?)/u.test(text) &&
+      !/^(?:เพิ่มงาน|เพิ่มกิจกรรม|ช่วยเพิ่มงาน|ช่วยเพิ่มกิจกรรม)\s/u.test(text))
+    return undefined;
   // Restrict this deterministic path to single create/schedule requests.
   // General questions, comments, edits and multi-task prompts still use chat.
   let input = text;
@@ -110,10 +115,10 @@ export function parseScheduledAdd(
     return { reason: "วันที่ที่ระบุกับคำว่าพรุ่งนี้ไม่ตรงกัน กรุณายืนยันวันที่อีกครั้ง" };
 
   const timeRange =
-    /(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?)?\s*(?:บ่าย|เช้า|เย็น)?\s*(\d{1,2}):(\d{2})\s*(?:-|–|—|ถึง)\s*(\d{1,2}):(\d{2})\s*(?:น\.?|นาฬิกา)?/u;
+    /(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?)?\s*(?:บ่าย|เช้า|เย็น)?\s*(\d{1,2}):(\d{2})\s*(?:-|–|—|ถึง)\s*(\d{1,2}):(\d{2})\s*(?:นาฬิกา(?=\s|$)|น\.(?=\s|$)|น(?=\s|$))?/u;
   const range = input.match(timeRange);
   const singleTime =
-    /(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?)\s*(?:บ่าย|เช้า|เย็น)?\s*(\d{1,2}):(\d{2})\s*(?:น\.?|นาฬิกา)?/u;
+    /(?:เวลา|ช่วง|ตอน|เริ่ม(?:เวลา)?)\s*(?:บ่าย|เช้า|เย็น)?\s*(\d{1,2}):(\d{2})\s*(?:นาฬิกา(?=\s|$)|น\.(?=\s|$)|น(?=\s|$))?/u;
   const time = range ?? input.match(singleTime);
   if (!time) return undefined;
   // No guessed event when the user is simply asking about free time.
@@ -121,6 +126,7 @@ export function parseScheduledAdd(
   const durationMatch = input.match(/(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(\d{1,3})\s*(ชั่วโมง|นาที)/u);
   if (durationMatch) input = input.replace(durationMatch[0], " ");
   input = input.trim()
+    .replace(/\s*วันที่\s*$/u, "")
     .replace(/^(?:ขอ|ช่วย|อยากให้|ให้ยูนะ)\s*/u, "")
     .replace(/^(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|จัด(?:ตาราง)?(?:งาน|กิจกรรม)?|ลงตาราง)\s*/u, "")
     .replace(/(?:ลงในตารางจริง|ลงตาราง|ในตาราง|ให้ด้วย|ด้วย|หน่อย|นะ|ค่ะ|ครับ)\s*$/u, "")
@@ -130,7 +136,11 @@ export function parseScheduledAdd(
       !/^(?:เพิ่ม|จัด|ช่วยเพิ่ม|ช่วยจัด)/u.test(text.replace(/^(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืนนี้|มะรืน)\s*/u, "")) &&
       !/(?:เพิ่มงาน|เพิ่มกิจกรรม|เพิ่มกำหนดการ)/u.test(text))
     return undefined;
-  const name = input.replace(/\s+/g, " ");
+  // Legacy follow-up buttons could contain the user's trailing question
+  // "ได้กี่นาที" as part of the task name. Sanitize only the suffixes,
+  // never the actual activity title or its explicitly requested timing.
+  const name = input.replace(/(?:ได้กี่(?:นาที|ชั่วโมง)|ได้ไหม|ได้หรือเปล่า|พอไหม|ว่างไหม)\s*$/gu, "")
+    .replace(/\s+/gu, " ").trim();
   if (!name || name.length > 120 || !validDate(date))
     return { reason: "ยังระบุชื่อกิจกรรมหรือวันที่ไม่ชัดเจน" };
   const start = localTime(time[1], time[2]);
@@ -473,6 +483,7 @@ export function previewInsertionMinutes(
   // Extract only the text following the insertion verb, not the hour/date.
   const nameMatch = message.match(/(?:แทรก|สอดแทรก|เพิ่ม)\s*(.+?)\s*(?:ได้ไหม|ได้หรือเปล่า|ได้กี่นาที|ได้กี่ชั่วโมง|พอไหม|ว่างไหม|ว่างกี่นาที|\?)\s*$/u);
   const name = nameMatch?.[1]?.replace(/^(?:กิจกรรม|งาน)\s*/u, "")
+    .replace(/\s*(?:(?:ได้กี่(?:นาที|ชั่วโมง)|ได้ไหม|ได้หรือเปล่า|พอไหม|ว่างไหม)\s*)+$/u, "")
     .replace(/\s*(?:ในตาราง|ลงตาราง|ช่วง\d{1,2}โมง)\s*$/u, "").trim();
   if (!name || name.length > 120 || !/[\p{L}]/u.test(name)) return undefined;
   const breakMinutes = Math.max(15, state.settings.breakMinutes);
@@ -670,6 +681,10 @@ export function parseTimeDurationEdit(
   now = Date.now(),
 ): { command?: Command; reason?: string } | undefined {
   let input = message.trim();
+  // Explicit creation is not an edit of an existing slot. Previously the
+  // permissive resize/move regex swallowed "เพิ่มงาน X ...เวลา 09:30 นาน 30
+  // นาที" before the add parser could run, then returned "task not found".
+  if (/^(?:(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:ช่วย\s*)?(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|สร้าง(?:งาน|กิจกรรม)|ลงตาราง)/u.test(input)) return undefined;
   let date = selected;
   const relative = input.match(/^(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*/u);
   if (relative) {
