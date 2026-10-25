@@ -27,6 +27,7 @@ import {
   validateOllamaDurationEdit,
   parseTimeDurationEdit,
   parseExerciseWithBreaks,
+  previewInsertionMinutes,
   parseExistingTimeMove,
   parseScheduledAdd,
   parseMultipleNewTasks,
@@ -559,6 +560,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let multipleAdds: ReturnType<typeof parseMultipleNewTasks>;
     let alternativeBatch: ReturnType<typeof parseMultipleNewTasks>;
     let shiftedBatch: ReturnType<typeof parseGroupShiftPlan>;
+    let insertInquiry: ReturnType<typeof previewInsertionMinutes>;
+    let insertionFollowUps: PlannerConstraint["followUps"] | undefined;
     let requireBatchApproval = false;
     let batchApprovalCount = 0;
     let blocked: PlannerConstraint | undefined;
@@ -603,36 +606,76 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           ? snapshot.proposal.sessions.filter((task) =>
               !snapshot.sessions.some((previous) => previous.id === task.id))
           : [];
-      shiftedBatch = parseGroupShiftPlan(
+      insertInquiry = previewInsertionMinutes(snapshot, dto.date, dto.message);
+      shiftedBatch = insertInquiry ? undefined : parseGroupShiftPlan(
         snapshot, dto.date, dto.message, pendingProposal,
         latestReply?.role === "assistant" &&
           latestReply.outcome?.startsWith("รอยืนยันแผนเพิ่ม")
           ? latestReply.content : "",
       );
-      durationEdit = shiftedBatch ? undefined :
+      durationEdit = shiftedBatch || insertInquiry ? undefined :
         parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
         parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      const directMultipleAdds = durationEdit || shiftedBatch ? undefined :
+      const directMultipleAdds = durationEdit || shiftedBatch || insertInquiry ? undefined :
         parseMultipleNewTasks(dto.message, dto.date);
-      alternativeBatch = durationEdit || shiftedBatch || directMultipleAdds
+      alternativeBatch = durationEdit || shiftedBatch || insertInquiry || directMultipleAdds
         ? undefined
         : parseBatchAlternativeFollowUp(history, dto.message, dto.date);
       multipleAdds = directMultipleAdds ?? alternativeBatch;
-      timedAdd = durationEdit || multipleAdds || shiftedBatch ? undefined :
+      timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
       const unparsedClockRequest =
-        !durationEdit && !timedAdd && !shiftedBatch &&
+        !durationEdit && !timedAdd && !shiftedBatch && !insertInquiry &&
         /\d{1,2}:\d{2}/u.test(dto.message) &&
         /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน|เลื่อน|ย้าย|ขยับ|เปลี่ยนเวลา/u.test(dto.message);
-      const guided = durationEdit || timedAdd || multipleAdds || shiftedBatch || unparsedClockRequest
+      const guided = durationEdit || timedAdd || multipleAdds || shiftedBatch || insertInquiry || unparsedClockRequest
         ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
-      if (shiftedBatch) {
+      if (insertInquiry) {
+        const clock = (minutes: number) =>
+          String(Math.floor(minutes / 60)).padStart(2, "0") +
+          ":" + String(minutes % 60).padStart(2, "0");
+        if (insertInquiry.start !== undefined && insertInquiry.duration >= 5) {
+          const { date, name, start, duration, breakMinutes } = insertInquiry;
+          output = {
+            reply: "ยูนะตรวจตารางจริงให้แล้วค่ะ! ช่วง " +
+              clock(insertInquiry.hour * 60) + " แทรก " + name +
+              " ได้สูงสุด " + duration + " นาทีค่ะ\n" +
+              "• ทำกิจกรรม " + clock(start) + "–" +
+              clock(start + duration) + "\n" +
+              "• เว้นเวลาพักกับกิจกรรมรอบข้างอย่างน้อย " +
+              breakMinutes + " นาที\n" +
+              "ไม่ต้องย้ายงานเดิม และยังไม่ได้เพิ่มลงตารางนะคะ " +
+              "อยากให้ยูนะเพิ่มช่วงนี้ให้ไหมคะ?",
+            actions: [],
+          };
+          insertionFollowUps = [{
+            label: "เพิ่ม " + duration + " นาที",
+            prompt: "เพิ่มงาน " + name + " วันที่ " + date +
+              " เวลา " + clock(start) + " นาน " + duration + " นาที",
+          }];
+        } else {
+          output = {
+            reply: "ยูนะตรวจตารางจริงให้แล้วค่ะ แต่ช่วง " +
+              clock(insertInquiry.hour * 60) +
+              " ยังแทรก " + insertInquiry.name +
+              " ไม่ได้แม้แต่ 5 นาที เพราะ" +
+              (insertInquiry.reason ?? "เวลาว่างไม่เพียงพอ") +
+              "ค่ะ ยังไม่ได้เปลี่ยนตารางนะคะ",
+            actions: [],
+          };
+          insertionFollowUps = [{
+            label: "หาช่วงเวลาอื่น",
+            prompt: "ช่วยหาเวลาว่างอื่นสำหรับ " + insertInquiry.name +
+              " ในวันที่ " + insertInquiry.date + " โดยไม่เปลี่ยนตาราง",
+          }];
+        }
+      } else if (shiftedBatch) {
         if (shiftedBatch.actions?.length) {
           try {
             const check = executeCommands(snapshot, shiftedBatch.actions, dto.date);
@@ -1198,7 +1241,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         requestId: dto.requestId,
         outcome,
         proposalId: proposal?.id,
-        followUps: blocked?.followUps,
+        followUps: blocked?.followUps ?? insertionFollowUps,
         appliedChanges,
       };
       s.chats ??= {};

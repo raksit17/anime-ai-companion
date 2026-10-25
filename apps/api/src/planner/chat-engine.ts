@@ -438,6 +438,84 @@ export function simpleAddFromMessage(message: string, now = Date.now()): Command
  * The model cannot silently reinterpret "half an hour" as a resize of another
  * activity merely because the request also mentions cleaning or job search.
  */
+
+/** Read-only availability answer for "ช่วง 9 โมง แทรกออกกำลังกายได้ไหม".
+ * The maximum refers to ACTIVITY minutes, after protecting breaks on BOTH
+ * sides, the current local time, sleep window and the daily workload cap.
+ * Never return a mutation merely because a question contains "เพิ่ม".
+ */
+export function previewInsertionMinutes(
+  state: State,
+  selected: string,
+  message: string,
+  now = Date.now(),
+): { date: string; name: string; hour: number; start?: number;
+     duration: number; remainingCapacity: number; breakMinutes: number;
+     reason?: string } | undefined {
+  if (!/(?:แทรก|สอดแทรก|เพิ่ม)/u.test(message) ||
+      !/(?:ได้ไหม|ได้หรือเปล่า|ได้กี่นาที|ได้กี่ชั่วโมง|พอไหม|ว่างไหม|ว่างกี่นาที|\?)/u.test(message))
+    return undefined;
+  const hourMatch = message.match(/(?:ช่วง|ตอน|เวลา)?\s*(\d{1,2})\s*โมง/u);
+  if (!hourMatch) return undefined;
+  const hour = Number(hourMatch[1]);
+  if (hour < 0 || hour > 23) return undefined;
+  const dates = [...message.matchAll(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu)]
+    .map((hit) => hit[0].replace("พรุ้งนี้", "พรุ่งนี้"));
+  if (new Set(dates).size > 1) return undefined;
+  const days = dates[0] === "วันนี้" ? 0 : dates[0] === "พรุ่งนี้" ? 1 :
+    dates[0]?.startsWith("มะรืน") ? 2 : undefined;
+  const explicitDate = message.match(/\b\d{4}-\d{2}-\d{2}\b/u)?.[0];
+  const relativeDate = days === undefined ? undefined :
+    new Date(Date.parse(today(now)) + days * 86400000).toISOString().slice(0, 10);
+  if (relativeDate && explicitDate && relativeDate !== explicitDate) return undefined;
+  const date = explicitDate ?? relativeDate ?? selected;
+  if (!validDate(date) || date < today(now)) return undefined;
+  // Extract only the text following the insertion verb, not the hour/date.
+  const nameMatch = message.match(/(?:แทรก|สอดแทรก|เพิ่ม)\s*(.+?)\s*(?:ได้ไหม|ได้หรือเปล่า|ได้กี่นาที|ได้กี่ชั่วโมง|พอไหม|ว่างไหม|ว่างกี่นาที|\?)\s*$/u);
+  const name = nameMatch?.[1]?.replace(/^(?:กิจกรรม|งาน)\s*/u, "")
+    .replace(/\s*(?:ในตาราง|ลงตาราง|ช่วง\d{1,2}โมง)\s*$/u, "").trim();
+  if (!name || name.length > 120 || !/[\p{L}]/u.test(name)) return undefined;
+  const breakMinutes = Math.max(15, state.settings.breakMinutes);
+  const limit = state.capacityOverrides?.[date] ?? state.settings.maxMinutes;
+  const spent = state.sessions.filter((task) =>
+    task.date === date && !!task.goalId &&
+    (task.status === "planned" || task.status === "done"))
+    .reduce((sum, task) => sum + task.duration, 0);
+  const remainingCapacity = Math.max(0, limit - spent);
+  const strict = {
+    ...state,
+    settings: { ...state.settings, breakMinutes },
+  };
+  // The hour means a placement WINDOW, not a mandatory exact start.
+  // Five-minute grid is intentional: reports precise usable minutes and
+  // excludes leftover time too short for the minimum 5-minute session.
+  const from = hour * 60, until = Math.min(from + 60, 1440);
+  let bestStart: number | undefined;
+  let bestDuration = 0;
+  for (let start = from; start < until; start += 5) {
+    for (let duration = 5; duration <= Math.min(240, remainingCapacity, until - start);
+      duration += 5) {
+      const candidate: Session = {
+        id: "insertion-preview", goalId: "daily:insertion-preview",
+        date, name, start, duration, status: "planned",
+        fixed: false, reminder: 10,
+      };
+      if (fits(strict, candidate, now) && duration > bestDuration) {
+        bestStart = start;
+        bestDuration = duration;
+      }
+    }
+  }
+  return {
+    date, name, hour, start: bestStart,
+    duration: bestDuration, remainingCapacity, breakMinutes,
+    ...(bestDuration ? {} : { reason:
+      remainingCapacity < 5
+        ? "เพดานนาทีกิจกรรมของวันเต็มแล้ว"
+        : "ช่วงเวลานี้ไม่มีช่องที่เว้นพักครบและยังไม่ผ่านไปแล้ว" }),
+  };
+}
+
 export function parseExerciseWithBreaks(
   state: State,
   selected: string,
