@@ -466,9 +466,9 @@ export function parseFinishNowIntent(
   now = Date.now(),
 ): { command?: Command; reason?: string } | undefined {
   const text = message.trim();
-  if (/(?:ไหม|หรือเปล่า|หรือไม่|\\?)/u.test(text)) return undefined;
+  if (/(?:ไหม|หรือเปล่า|หรือไม่|\?)/u.test(text)) return undefined;
   const utterance = text.match(
-    /^(?:วันนี้\\s*)?(?:ฉัน\\s*|ผม\\s*|เรา\\s*)?(?:ทำ\\s*|งาน\\s*|กิจกรรม\\s*)?(.+?)\\s*(?:ทำเสร็จ|เสร็จ(?:แล้ว|เรียบร้อย|ก่อนกำหนด)?|จบ(?:แล้ว)?)\\s*(?:ตอนนี้|แล้ว|เรียบร้อย|ก่อนเวลา|ก่อนกำหนด|นะ|ครับ|ค่ะ)?\\s*$/iu,
+    /^(?:วันนี้\s*)?(?:ฉัน\s*|ผม\s*|เรา\s*)?(?:ทำ\s*|งาน\s*|กิจกรรม\s*)?(.+?)\s*(?:ทำเสร็จ|เสร็จ(?:แล้ว|เรียบร้อย|ก่อนกำหนด)?|จบ(?:แล้ว)?)\s*(?:ตอนนี้|แล้ว|เรียบร้อย|ก่อนเวลา|ก่อนกำหนด|นะ|ครับ|ค่ะ)?\s*$/iu,
   );
   if (!utterance) return undefined;
   const currentDay = today(now);
@@ -476,8 +476,8 @@ export function parseFinishNowIntent(
     return { reason: "การบันทึกว่าเสร็จตอนนี้ใช้กับวันที่ปัจจุบันเท่านั้น กรุณาเลือกวันนี้ก่อนค่ะ" };
   const normalize = (value: string) =>
     value.toLocaleLowerCase()
-      .replace(/^(?:ทำ|งาน|กิจกรรม)\\s*/u, "")
-      .replace(/[\\s.,–—-]+/gu, "");
+      .replace(/^(?:ทำ|งาน|กิจกรรม)\s*/u, "")
+      .replace(/[\s.,–—-]+/gu, "");
   const wanted = normalize(utterance[1]);
   if (!wanted || wanted.length < 3)
     return { reason: "กรุณาระบุชื่อกิจกรรมที่เสร็จแล้ว" };
