@@ -684,7 +684,7 @@ export function parseTimeDurationEdit(
   // Explicit creation is not an edit of an existing slot. Previously the
   // permissive resize/move regex swallowed "เพิ่มงาน X ...เวลา 09:30 นาน 30
   // นาที" before the add parser could run, then returned "task not found".
-  if (/^(?:(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:ช่วย\s*)?(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|สร้าง(?:งาน|กิจกรรม)|ลงตาราง)\b?/u.test(input)) return undefined;
+  if (/^(?:(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:ช่วย\s*)?(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|สร้าง(?:งาน|กิจกรรม)|ลงตาราง)/u.test(input)) return undefined;
   let date = selected;
   const relative = input.match(/^(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*/u);
   if (relative) {
