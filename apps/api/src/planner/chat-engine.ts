@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { adapt } from "./adaptive";
-import { fits, Session, State, timestamp, today, validDate } from "./engine";
+import { fits, occupiedMinutes, Session, State, timestamp, today, validDate } from "./engine";
 export type Command = {
   type: "add" | "move" | "resize" | "edit" | "adapt" | "done" | "skip";
   id?: string;
@@ -533,7 +533,7 @@ export function previewInsertionMinutes(
   const spent = state.sessions.filter((task) =>
     task.date === date && !!task.goalId &&
     (task.status === "planned" || task.status === "done"))
-    .reduce((sum, task) => sum + task.duration, 0);
+    .reduce((sum, task) => sum + occupiedMinutes(task), 0);
   const remainingCapacity = Math.max(0, limit - spent);
   const strict = {
     ...state,
