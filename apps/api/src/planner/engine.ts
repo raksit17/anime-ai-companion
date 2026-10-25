@@ -22,6 +22,8 @@ export type Session = {
   reminder: number;
   notified?: boolean;
   note?: string;
+  /** ISO timestamp of actual confirmation. The original booked duration stays intact. */
+  completedAt?: string;
 };
 export type State = {
   goals: Goal[];
@@ -60,6 +62,36 @@ export function today(now = Date.now()) {
 export function timestamp(date: string, minutes: number) {
   return Date.parse(`${date}T00:00:00+07:00`) + minutes * 60000;
 }
+/** End of reserved time in Bangkok minutes. Early completion frees only
+ * the unused tail of the booked slot, never overwrites planned duration.
+ * Old completed records without a timestamp remain backwards compatible.
+ */
+export function occupiedEnd(session: Session): number {
+  const scheduledEnd = session.start + session.duration;
+  if (session.status !== "done" || !session.completedAt)
+    return scheduledEnd;
+  const finishedAt = Date.parse(session.completedAt);
+  if (!Number.isFinite(finishedAt)) return scheduledEnd;
+  const finishedOnDay = Math.ceil((finishedAt - timestamp(session.date, 0)) / 60000);
+  return Math.max(session.start, Math.min(scheduledEnd, finishedOnDay));
+}
+
+export function releasedEarlyMinutes(session: Session): number {
+  return session.status === "done"
+    ? Math.max(0, session.start + session.duration - occupiedEnd(session))
+    : 0;
+}
+
+export function occupiedMinutes(session: Session): number {
+  return Math.max(0, occupiedEnd(session) - session.start);
+}
+
+export function finishSessionNow(session: Session, now = Date.now()): Session {
+  if (session.status !== "planned")
+    throw new Error("กิจกรรมนี้บันทึกผลแล้ว");
+  return { ...session, status: "done", completedAt: new Date(now).toISOString() };
+}
+
 export function fits(state: State, session: Session, now: number) {
   const { wake, sleep, breakMinutes, maxMinutes } = state.settings;
   const dailyLimit = state.capacityOverrides?.[session.date] ?? maxMinutes;
@@ -76,10 +108,10 @@ export function fits(state: State, session: Session, now: number) {
     others.every(
       (s) =>
         session.start + session.duration + breakMinutes <= s.start ||
-        session.start >= s.start + s.duration + breakMinutes,
+        session.start >= occupiedEnd(s) + breakMinutes,
     ) &&
     (!session.goalId ||
-      others.filter((s) => !!s.goalId).reduce((n, s) => n + s.duration, 0) +
+      others.filter((s) => !!s.goalId).reduce((n, s) => n + occupiedMinutes(s), 0) +
         session.duration <=
         dailyLimit)
   );

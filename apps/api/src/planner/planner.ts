@@ -28,6 +28,7 @@ import {
   parseTimeDurationEdit,
   parseExerciseWithBreaks,
   previewInsertionMinutes,
+  parseFinishNowIntent,
   parseExistingTimeMove,
   parseScheduledAdd,
   parseMultipleNewTasks,
@@ -66,6 +67,8 @@ import {
   fits,
   swapDaySessions,
   editDaySessionTime,
+  finishSessionNow,
+  releasedEarlyMinutes,
   initial,
   plan,
   Session,
@@ -175,6 +178,9 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         minutes: s.sessions
           .filter((x) => x.status === "done")
           .reduce((n, x) => n + x.duration, 0),
+        /** Time previously reserved but released by early completion. */
+        earlyReleasedMinutes: s.sessions
+          .reduce((n, x) => n + releasedEarlyMinutes(x), 0),
       },
     }));
   }
@@ -434,9 +440,12 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       if (!session) throw new NotFoundException();
       if (session.status !== "planned")
         throw new ConflictException("กิจกรรมนี้บันทึกผลแล้ว");
-      Object.assign(session, dto);
+      const finished = dto.status === "done"
+        ? finishSessionNow(session, Date.now())
+        : { ...session, status: "skipped" as const };
+      Object.assign(session, finished, ...(dto.note !== undefined ? [{ note: dto.note }] : []));
       this.changed(s);
-      return session;
+      return { ...session, earlyReleasedMinutes: releasedEarlyMinutes(session) };
     }, true);
   }
   reminders() {
@@ -561,6 +570,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let alternativeBatch: ReturnType<typeof parseMultipleNewTasks>;
     let shiftedBatch: ReturnType<typeof parseGroupShiftPlan>;
     let insertInquiry: ReturnType<typeof previewInsertionMinutes>;
+    let finishIntent: ReturnType<typeof parseFinishNowIntent>;
     let insertionFollowUps: PlannerConstraint["followUps"] | undefined;
     let requireBatchApproval = false;
     let batchApprovalCount = 0;
@@ -606,37 +616,55 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           ? snapshot.proposal.sessions.filter((task) =>
               !snapshot.sessions.some((previous) => previous.id === task.id))
           : [];
-      insertInquiry = previewInsertionMinutes(snapshot, dto.date, dto.message);
-      shiftedBatch = insertInquiry ? undefined : parseGroupShiftPlan(
+      finishIntent = parseFinishNowIntent(snapshot, dto.date, dto.message);
+      insertInquiry = finishIntent ? undefined :
+        previewInsertionMinutes(snapshot, dto.date, dto.message);
+      shiftedBatch = insertInquiry || finishIntent ? undefined : parseGroupShiftPlan(
         snapshot, dto.date, dto.message, pendingProposal,
         latestReply?.role === "assistant" &&
           latestReply.outcome?.startsWith("รอยืนยันแผนเพิ่ม")
           ? latestReply.content : "",
       );
-      durationEdit = shiftedBatch || insertInquiry ? undefined :
+      durationEdit = shiftedBatch || insertInquiry || finishIntent ? undefined :
         parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
         parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      const directMultipleAdds = durationEdit || shiftedBatch || insertInquiry ? undefined :
+      const directMultipleAdds = durationEdit || shiftedBatch || insertInquiry || finishIntent ? undefined :
         parseMultipleNewTasks(dto.message, dto.date);
-      alternativeBatch = durationEdit || shiftedBatch || insertInquiry || directMultipleAdds
+      alternativeBatch = durationEdit || shiftedBatch || insertInquiry || finishIntent || directMultipleAdds
         ? undefined
         : parseBatchAlternativeFollowUp(history, dto.message, dto.date);
       multipleAdds = directMultipleAdds ?? alternativeBatch;
-      timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry ? undefined :
+      timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry || finishIntent ? undefined :
         (parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
       const unparsedClockRequest =
-        !durationEdit && !timedAdd && !shiftedBatch && !insertInquiry &&
+        !durationEdit && !timedAdd && !shiftedBatch && !insertInquiry && !finishIntent &&
         /\d{1,2}:\d{2}/u.test(dto.message) &&
         /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน|เลื่อน|ย้าย|ขยับ|เปลี่ยนเวลา/u.test(dto.message);
-      const guided = durationEdit || timedAdd || multipleAdds || shiftedBatch || insertInquiry || unparsedClockRequest
+      const guided = durationEdit || timedAdd || multipleAdds || shiftedBatch || insertInquiry || finishIntent || unparsedClockRequest
         ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
-      if (insertInquiry) {
+      if (finishIntent) {
+        if (finishIntent.command) {
+          output = {
+            reply: "ยูนะจะบันทึกว่ากิจกรรมนี้เสร็จแล้วตอนนี้ให้ค่ะ",
+            actions: [finishIntent.command],
+          };
+        } else {
+          blocked = {
+            reason: finishIntent.reason ?? "ยังไม่พบงานที่จะบันทึกเสร็จ",
+            followUps: [{
+              label: "ดูตาราง",
+              prompt: "ช่วยแสดงรายการกิจกรรมที่ยังรอทำของวันนี้ โดยไม่เปลี่ยนตาราง",
+            }],
+          };
+          output = { reply: "อืม… " + blocked.reason + " ค่ะ ยังไม่ได้เปลี่ยนตารางนะคะ", actions: [] };
+        }
+      } else if (insertInquiry) {
         const clock = (minutes: number) =>
           String(Math.floor(minutes / 60)).padStart(2, "0") +
           ":" + String(minutes % 60).padStart(2, "0");
@@ -1171,6 +1199,28 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             output.reply = dto.autoApply
               ? `เรียบร้อยค่ะ ฉันตั้ง ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) ตามที่ขอแล้วนะ ${editedCommand?.preserveOtherSlots ? "กิจกรรมอื่นยังอยู่เวลาเดิมค่ะ" : "งานอื่นที่จำเป็นต้องขยับก็จัดให้เว้นพักตามกฎค่ะ"}`
               : `ฉันเตรียมแผน ${editedItem.name} วันที่ ${editedItem.date} เวลา ${fmt(editedItem.start)}–${fmt(editedItem.start + editedItem.duration)} (${editedItem.duration} นาที) แล้วค่ะ รอเธอยืนยันก่อนนะ`;
+          }
+          if (finishIntent?.command?.id) {
+            const confirmed = result.sessions.find((x) =>
+              x.id === finishIntent!.command!.id && x.status === "done");
+            if (confirmed) {
+              const actual = confirmed.completedAt
+                ? new Date(confirmed.completedAt).toLocaleTimeString("th-TH", {
+                    timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit",
+                    hour12: false,
+                  })
+                : "ตอนนี้";
+              const freed = releasedEarlyMinutes(confirmed);
+              output.reply = dto.autoApply
+                ? "ยูนะบันทึกว่า " + confirmed.name + " เสร็จจริงเวลา " +
+                    actual + " แล้วค่ะ " +
+                    (freed ? "เสร็จก่อนกำหนดและคืนช่วงเวลาที่จองไว้ " + freed + " นาที (ยังต้องเว้นพักก่อนงานถัดไป)" :
+                      "ไม่เหลือเวลาที่จองไว้ให้คืนแล้ว") +
+                    " โดยยังไม่ย้ายกิจกรรมอื่นนะคะ"
+                : "ยูนะเตรียมบันทึกว่า " + confirmed.name +
+                    " เสร็จเวลา " + actual +
+                    " แล้วค่ะ รอยืนยันก่อนบันทึก ไม่ย้ายกิจกรรมอื่นนะคะ";
+            }
           }
           // Show the new duration only after the validator returned a
           // real changed session, never merely because the model said "done".

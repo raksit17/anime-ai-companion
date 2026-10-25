@@ -19,6 +19,7 @@ type Session = {
   duration: number;
   status: string;
   fixed: boolean;
+  completedAt?: string;
 };
 type PlannerFollowUp = {
   label: string;
@@ -102,6 +103,27 @@ const longDate = (d: string) =>
     day: "numeric",
     month: "long",
   });
+
+function actualFinishedClock(session: Session) {
+  if (!session.completedAt) return "";
+  const completed = new Date(session.completedAt);
+  return Number.isNaN(completed.getTime()) ? "" :
+    completed.toLocaleTimeString("th-TH", {
+      timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit",
+      hour12: false,
+    });
+}
+function earlyReleasedMinutes(session: Session) {
+  if (session.status !== "done" || !session.completedAt) return 0;
+  const actual = Date.parse(session.completedAt);
+  if (!Number.isFinite(actual)) return 0;
+  const startOfDay = Date.parse(`${session.date}T00:00:00+07:00`);
+  const completedMinutes = Math.ceil((actual - startOfDay) / 60000);
+  const plannedEnd = session.start + session.duration;
+  return Math.max(0, plannedEnd -
+    Math.max(session.start, Math.min(plannedEnd, completedMinutes)));
+}
+
 const daySessions = computed(() =>
   sessions.value
     .filter((s) => s.date === date.value)
@@ -731,6 +753,13 @@ watch(advanced, (value) => {
               <p>
                 {{ s.duration }} นาที <span v-if="s.fixed">· นัดคงที่</span>
               </p>
+              <p v-if="s.status === 'done' && actualFinishedClock(s)" class="actual-completion">
+                <span>เสร็จจริง {{ actualFinishedClock(s) }}</span>
+                <span v-if="earlyReleasedMinutes(s) > 0">
+                  · เร็วกว่ากำหนด {{ earlyReleasedMinutes(s) }} นาที
+                </span>
+                <span class="planned-time-hint">(เวลาเดิม {{ clock(s.start) }}–{{ clock(s.start + s.duration) }})</span>
+              </p>
               <form
                 v-if="editingSessionId === s.id"
                 :id="`planner-edit-time-${s.id}`"
@@ -1258,6 +1287,15 @@ watch(advanced, (value) => {
   background: #f0f7e9;
 }
 .reorder-dragging { opacity: 0.55; }
+.actual-completion {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: #4b7750;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.planned-time-hint { color: #82907c; }
 .reorder-hint {
   color: #63755c;
   font-size: 11px;

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { adapt } from "./adaptive";
-import { fits, Session, State, timestamp, today, validDate } from "./engine";
+import { fits, occupiedMinutes, Session, State, timestamp, today, validDate } from "./engine";
 export type Command = {
   type: "add" | "move" | "resize" | "edit" | "adapt" | "done" | "skip";
   id?: string;
@@ -454,6 +454,48 @@ export function simpleAddFromMessage(message: string, now = Date.now()): Command
  * sides, the current local time, sleep window and the daily workload cap.
  * Never return a mutation merely because a question contains "เพิ่ม".
  */
+
+/** Parse an explicit "X เสร็จตอนนี้" into a verified completion of exactly
+ * one still-planned task. Questions and generic "finished?" never mutate.
+ * Use the exact current date for 'ตอนนี้', regardless of selected day.
+ */
+export function parseFinishNowIntent(
+  state: State,
+  selected: string,
+  message: string,
+  now = Date.now(),
+): { command?: Command; reason?: string } | undefined {
+  const text = message.trim();
+  if (/(?:ไหม|หรือเปล่า|หรือไม่|\?)/u.test(text)) return undefined;
+  const utterance = text.match(
+    /^(?:วันนี้\s*)?(?:ฉัน\s*|ผม\s*|เรา\s*)?(?:ทำ\s*|งาน\s*|กิจกรรม\s*)?(.+?)\s*(?:ทำเสร็จ|เสร็จ(?:แล้ว|เรียบร้อย|ก่อนกำหนด)?|จบ(?:แล้ว)?)\s*(?:ตอนนี้|แล้ว|เรียบร้อย|ก่อนเวลา|ก่อนกำหนด|นะ|ครับ|ค่ะ)?\s*$/iu,
+  );
+  if (!utterance) return undefined;
+  const currentDay = today(now);
+  if (selected !== currentDay)
+    return { reason: "การบันทึกว่าเสร็จตอนนี้ใช้กับวันที่ปัจจุบันเท่านั้น กรุณาเลือกวันนี้ก่อนค่ะ" };
+  const normalize = (value: string) =>
+    value.toLocaleLowerCase()
+      .replace(/^(?:ทำ|งาน|กิจกรรม)\s*/u, "")
+      .replace(/[\s.,–—-]+/gu, "");
+  const wanted = normalize(utterance[1]);
+  if (!wanted || wanted.length < 3)
+    return { reason: "กรุณาระบุชื่อกิจกรรมที่เสร็จแล้ว" };
+  const matches = state.sessions.filter((item) => {
+    if (item.date !== currentDay) return false;
+    const name = normalize(item.name);
+    return name === wanted ||
+      (wanted.length >= 8 && name.includes(wanted));
+  });
+  if (matches.length !== 1)
+    return { reason: matches.length
+      ? "พบกิจกรรมชื่อคล้ายกันมากกว่าหนึ่งรายการ กรุณาระบุชื่อเต็ม"
+      : "ไม่พบชื่อกิจกรรมในตารางของวันนี้ กรุณาเลือกให้ตรงกับตาราง" };
+  if (matches[0].status !== "planned")
+    return { reason: "กิจกรรม " + matches[0].name + " บันทึกผลแล้ว" };
+  return { command: { type: "done", id: matches[0].id, date: currentDay } };
+}
+
 export function previewInsertionMinutes(
   state: State,
   selected: string,
@@ -491,7 +533,7 @@ export function previewInsertionMinutes(
   const spent = state.sessions.filter((task) =>
     task.date === date && !!task.goalId &&
     (task.status === "planned" || task.status === "done"))
-    .reduce((sum, task) => sum + task.duration, 0);
+    .reduce((sum, task) => sum + occupiedMinutes(task), 0);
   const remainingCapacity = Math.max(0, limit - spent);
   const strict = {
     ...state,
@@ -1259,6 +1301,7 @@ export function executeCommands(
       throw new Error("กิจกรรมนี้บันทึกผลแล้ว");
     if (a.type === "done" || a.type === "skip") {
       s.status = a.type === "done" ? "done" : "skipped";
+      if (a.type === "done") s.completedAt = new Date(now).toISOString();
       continue;
     }
     if (a.type === "edit") {
