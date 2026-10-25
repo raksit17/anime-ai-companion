@@ -19,12 +19,13 @@ import {
   parseExistingTimeMove,
   parseExerciseWithBreaks,
   previewInsertionMinutes,
+  parseFinishNowIntent,
   normalizePlannerActions,
   freeStartForAdd,
   explainExtendFollowUp,
   plannerMessages,
 } from "../src/planner/chat-engine";
-import { initial, today, plan, swapDaySessions, editDaySessionTime } from "../src/planner/engine";
+import { initial, today, plan, swapDaySessions, editDaySessionTime, finishSessionNow, occupiedEnd, releasedEarlyMinutes, occupiedMinutes, fits } from "../src/planner/engine";
 const require = createRequire(import.meta.url);
 const { PlannerService } = require("../dist/planner/planner.js");
 const now = Date.parse("2030-01-07T00:00:00+07:00"),
@@ -2548,4 +2549,139 @@ test("the suggested exact slot is rejected if the calendar becomes occupied, wit
   });
   assert.match(response.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
   assert.deepEqual((await p.get()).sessions, seed.sessions);
+});
+
+function earlyAssignmentSeed(date = "2026-10-25") {
+  const seed = initial();
+  seed.settings.maxMinutes = 120;
+  seed.settings.sleep = 1320;
+  seed.sessions = [{
+    id: "assignment", goalId: "daily:assignment",
+    date, name: "ทำ assignment for software developer position ของ Playtorium",
+    start: 915, duration: 120, status: "planned" as const,
+    fixed: false, reminder: 10,
+  }];
+  return seed;
+}
+
+test("early completion records actual finish without overwriting the original 120-minute booking", () => {
+  const at1644 = Date.parse("2026-10-25T16:44:00+07:00");
+  const original = earlyAssignmentSeed();
+  const item = finishSessionNow(original.sessions[0], at1644);
+  assert.equal(item.status, "done");
+  assert.equal(item.start, 915);
+  assert.equal(item.duration, 120);
+  assert.equal(item.completedAt, "2026-10-25T09:44:00.000Z");
+  assert.equal(occupiedEnd(item), 1004);
+  assert.equal(occupiedMinutes(item), 89);
+  assert.equal(releasedEarlyMinutes(item), 31);
+  assert.equal(original.sessions[0].status, "planned");
+  assert.equal(original.sessions[0].completedAt, undefined);
+});
+
+test("completing assignment early makes a new future slot feasible with 15-minute breaks and valid capacity", () => {
+  const at1644 = Date.parse("2026-10-25T16:44:00+07:00");
+  const seed = earlyAssignmentSeed();
+  const candidate = {
+    id: "new-learning", goalId: "daily:new-learning",
+    name: "ทบทวนบทเรียน", date: "2026-10-25", start: 1019,
+    duration: 30, status: "planned" as const, fixed: false, reminder: 10,
+  };
+  assert.equal(fits(seed, candidate, at1644), false);
+  const completed = structuredClone(seed);
+  completed.sessions[0] = finishSessionNow(completed.sessions[0], at1644);
+  assert.equal(fits(completed, candidate, at1644), true);
+  assert.equal(fits(completed, { ...candidate, start: 1009 }, at1644), false);
+  assert.equal(fits(completed, { ...candidate, duration: 35 }, at1644), false);
+  assert.equal(completed.sessions[0].duration, 120);
+  assert.equal(executeCommands(completed, [{
+    type: "add", date: candidate.date, name: candidate.name,
+    start: candidate.start, duration: candidate.duration,
+  }], candidate.date, at1644).sessions.length, 2);
+});
+
+test("overdue or legacy done completion never manufactures released minutes", () => {
+  const seed = earlyAssignmentSeed();
+  const item = seed.sessions[0];
+  assert.equal(releasedEarlyMinutes({ ...item, status: "done" }), 0);
+  assert.equal(occupiedEnd({ ...item, status: "done" }), 1035);
+  assert.equal(releasedEarlyMinutes(finishSessionNow(item,
+    Date.parse("2026-10-25T17:30:00+07:00"))), 0);
+  assert.throws(() => finishSessionNow({ ...item, status: "done" }),
+    /บันทึกผลแล้ว/);
+});
+
+test("complete-now Thai phrase resolves unique Playtorium task without model-generated IDs", () => {
+  const seed = earlyAssignmentSeed();
+  const time = Date.parse("2026-10-25T16:44:00+07:00");
+  for (const phrase of [
+    "ทำ assignment for software developer position ของ Playtorium เสร็จตอนนี้",
+    "assignment for software developer position เสร็จแล้วตอนนี้",
+    "ทำ assignment for software developer position ของ Playtorium เสร็จแล้ว",
+  ]) {
+    assert.deepEqual(parseFinishNowIntent(seed, "2026-10-25", phrase, time), {
+      command: { type: "done", id: "assignment", date: "2026-10-25" },
+    }, phrase);
+  }
+  assert.equal(parseFinishNowIntent(seed, "2026-10-25",
+    "assignment for software developer position เสร็จไหม", time), undefined);
+  assert.match(parseFinishNowIntent(seed, "2026-10-26",
+    "assignment for software developer position เสร็จตอนนี้", time)?.reason ?? "",
+    /ปัจจุบัน/);
+  const finished = structuredClone(seed);
+  finished.sessions[0].status = "done";
+  assert.match(parseFinishNowIntent(finished, "2026-10-25",
+    "assignment for software developer position เสร็จตอนนี้", time)?.reason ?? "",
+    /บันทึกผลแล้ว/);
+});
+
+test("existing card complete action writes completion timestamp once, preserves plan, and releases reserved time", async () => {
+  const current = Date.now();
+  const date = today(current);
+  const minute = Math.floor(((current + 7 * 3600000) % 86400000) / 60000);
+  const seed = earlyAssignmentSeed(date);
+  seed.sessions[0].start = Math.max(0, minute - 30);
+  seed.sessions[0].duration = 120;
+  const { p } = fixture(seed);
+  const result = await p.progress("assignment", { status: "done" });
+  assert.equal(result.status, "done");
+  assert.ok(result.completedAt);
+  assert.ok(Math.abs(Date.parse(result.completedAt!) - current) < 20000);
+  assert.equal(result.duration, 120);
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 1);
+  assert.equal(saved.sessions[0].completedAt, result.completedAt);
+  assert.equal(saved.sessions[0].duration, 120);
+  assert.equal(saved.progress.earlyReleasedMinutes, releasedEarlyMinutes(result));
+  await assert.rejects(() => p.progress("assignment", { status: "done" }),
+    /บันทึกผลแล้ว/);
+});
+
+test("chat 'assignment เสร็จตอนนี้' saves real completion and a truthful receipt, no unrelated changes", async () => {
+  const day = today();
+  const state = earlyAssignmentSeed(day);
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("explicit done-now must be deterministic without Ollama IDs");
+  };
+  const response = await p.chat({ ...dto, date: day,
+    requestId: "early-finish-chat",
+    message: "ทำ assignment for software developer position ของ Playtorium เสร็จตอนนี้",
+    autoApply: true,
+  });
+  assert.equal(response.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(response.message.content, /เสร็จจริงเวลา/);
+  assert.match(response.message.content, /ยังไม่ย้ายกิจกรรมอื่น/);
+  assert.equal(response.message.appliedChanges?.[0]?.status, "done");
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 1);
+  assert.equal(saved.sessions[0].status, "done");
+  assert.ok(saved.sessions[0].completedAt);
+  const repeat = await p.chat({ ...dto, date: day,
+    requestId: "early-finish-chat",
+    message: "ทำ assignment for software developer position ของ Playtorium เสร็จตอนนี้",
+    autoApply: true,
+  });
+  assert.equal(repeat.message.id, response.message.id);
+  assert.equal((await p.get()).sessions[0].completedAt, saved.sessions[0].completedAt);
 });
