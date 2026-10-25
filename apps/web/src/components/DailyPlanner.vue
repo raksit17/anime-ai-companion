@@ -312,8 +312,14 @@ function canReorder(session: Session) {
     Date.parse(`${session.date}T00:00:00+07:00`) +
       session.start * 60000 > now.value;
 }
+// A missed task can remain planned after its scheduled start; allow
+// moving it forward via the inline editor without changing its history.
+function canEditTime(session: Session) {
+  return session.date === date.value &&
+    session.status === "planned" && !session.fixed;
+}
 function openTimeEditor(session: Session) {
-  if (busy.value || !canReorder(session)) return;
+  if (busy.value || !canEditTime(session)) return;
   if (editingSessionId.value === session.id) {
     editingSessionId.value = "";
     editError.value = "";
@@ -343,7 +349,7 @@ const editedEnd = computed(() => {
 });
 async function saveTimeEdit(session: Session) {
   if (busy.value || editingSessionId.value !== session.id ||
-      !canReorder(session)) return;
+      !canEditTime(session)) return;
   const start = parsedEditStart();
   const duration = editDuration.value;
   if (start === undefined || !Number.isInteger(duration) ||
@@ -707,6 +713,8 @@ watch(advanced, (value) => {
                       :aria-label="`สลับ ${s.name} กับกิจกรรมถัดไป`"
                       @click="swapWithNeighbor(s, 1)"
                     >↓</button>
+                  </template>
+                  <template v-if="canEditTime(s)">
                     <button
                       class="edit-time-trigger"
                       type="button"
