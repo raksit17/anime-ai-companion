@@ -2138,10 +2138,10 @@ test("inline editor rejects completed, fixed, started sessions and wrong date", 
   const { p } = fixture(seed);
   await assert.rejects(() => p.editSessionTime("exercise", {
     date: future, start: 480, duration: 20, expectedRevision: 0,
-  }), /ยังไม่เริ่ม/);
+  }), /ยังรอทำ/);
   await assert.rejects(() => p.editSessionTime("cleaning", {
     date: future, start: 570, duration: 15, expectedRevision: 0,
-  }), /ยังไม่เริ่ม/);
+  }), /ยังรอทำ/);
   const otherValidDate = new Date(Date.parse(future) + 86400000)
     .toISOString().slice(0, 10);
   await assert.rejects(() => p.editSessionTime("bbc", {
@@ -2270,7 +2270,7 @@ test("overdue planned work is movable to future, but completed and skipped work 
   assert.equal(editDaySessionTime(seed, "bbc", date, 535, 15, now).start, 535);
   assert.match(parseExistingTimeMove(seed, date,
     "เลื่อน อ่านข่าว BBC ไปเวลา 08:35", now)?.reason ?? "", /ผ่านไปแล้ว/);
-  assert.throws(() => editDaySessionTime(seed, "bbc", date, 525, 15, now),
+  assert.throws(() => editDaySessionTime(seed, "bbc", date, 520, 15, now),
     /ยังมาไม่ถึง/);
   for (const status of ["done", "skipped"] as const) {
     const blocked = structuredClone(seed);
