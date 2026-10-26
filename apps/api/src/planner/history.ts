@@ -153,6 +153,8 @@ export function computeHabitProfile(
     .map((a) => ({
       activityKey: a.activityKey, name: a.name,
       category: a.category, evidenceCount: a.done,
+      suggestedMinutes: Math.max(5, Math.min(120,
+        Math.round((a.scheduledMinutes / a.total) / 5) * 5)),
       preferredStart: Math.round(a.preferredStart! / 15) * 15,
       preferredWeekday: a.preferredWeekday,
       reason: "พบการทำสำเร็จ " + a.done +
