@@ -69,6 +69,9 @@ import {
   swapDaySessions,
   editDaySessionTime,
   finishSessionNow,
+  startSessionNow,
+  classifyActivity,
+  actualWorkedMinutes,
   releasedEarlyMinutes,
   initial,
   plan,
@@ -78,6 +81,7 @@ import {
   today,
   validDate,
 } from "./engine";
+import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "./history";
 type Proposal = {
   reasons?: string[];
   breakMinutes?: number;
@@ -141,13 +145,31 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(672314)`;
       const row = await tx.plannerStore.findUnique({ where: { id: "local" } });
       const state = (row?.data ?? initial()) as unknown as Stored;
+      const before = mutate ? structuredClone(state.sessions) : [];
       const result = fn(state);
-      if (mutate)
+      if (mutate) {
+        // Keep legacy session objects byte-for-byte compatible. Historical
+        // identity is derived on read and written into immutable audit events.
+        const events = diffSessionEvents(before, state.sessions);
+        // The journal and state commit atomically in PostgreSQL. Existing
+        // in-memory unit-test fixtures without a journal delegate are safe.
+        if (events.length && tx.plannerActivityEvent?.createMany)
+          await tx.plannerActivityEvent.createMany({
+            data: events.map((event) => ({
+              id: event.id, plannerId: event.plannerId,
+              sessionId: event.sessionId, activityKey: event.activityKey,
+              category: event.category, kind: event.kind,
+              occurredAt: event.occurredAt,
+              ...(event.before ? { before: event.before as any } : {}),
+              ...(event.after ? { after: event.after as any } : {}),
+            })),
+          });
         await tx.plannerStore.upsert({
           where: { id: "local" },
           create: { id: "local", data: state as any },
           update: { data: state as any },
         });
+      }
       return result;
     });
   }
@@ -184,6 +206,53 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           .reduce((n, x) => n + releasedEarlyMinutes(x), 0),
       },
     }));
+  }
+  async habits(days = 90) {
+    const durationDays = Number.isFinite(days)
+      ? Math.max(7, Math.min(365, Math.floor(days))) : 90;
+    const [state, events] = await Promise.all([
+      this.access((s) => s),
+      this.db.plannerActivityEvent?.findMany({
+        where: { plannerId: "local" },
+        orderBy: { occurredAt: "asc" },
+        take: 5000,
+      }) ?? Promise.resolve([]),
+    ]);
+    return computeHabitProfile(
+      state.sessions,
+      events.map((event) => ({
+        ...event,
+        before: event.before as unknown as Session | null,
+        after: event.after as unknown as Session | null,
+        category: classifyActivity(
+          ((event.after ?? event.before) as unknown as Session | null)?.name ?? "",
+        ),
+        kind: event.kind as ActivityEventKind,
+      })),
+      durationDays,
+    );
+  }
+  async habitEvents(limit = 100) {
+    const take = Number.isFinite(limit)
+      ? Math.max(1, Math.min(500, Math.floor(limit))) : 100;
+    const events = await this.db.plannerActivityEvent?.findMany({
+      where: { plannerId: "local" },
+      orderBy: { occurredAt: "desc" },
+      take,
+    });
+    return events ?? [];
+  }
+  startSession(id: string) {
+    return this.access((s) => {
+      const session = s.sessions.find((x) => x.id === id);
+      if (!session) throw new NotFoundException("ไม่พบกิจกรรม");
+      let started: Session;
+      try { started = startSessionNow(session); }
+      catch (e) { throw new ConflictException((e as Error).message); }
+      Object.assign(session, started);
+      this.changed(s);
+      return session;
+    }, true);
   }
   goal(dto: GoalDto, id?: string) {
     return this.access((s) => {
@@ -446,7 +515,11 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         : { ...session, status: "skipped" as const };
       Object.assign(session, finished, ...(dto.note !== undefined ? [{ note: dto.note }] : []));
       this.changed(s);
-      return { ...session, earlyReleasedMinutes: releasedEarlyMinutes(session) };
+      return {
+        ...session,
+        earlyReleasedMinutes: releasedEarlyMinutes(session),
+        actualWorkedMinutes: actualWorkedMinutes(session),
+      };
     }, true);
   }
   reminders() {
@@ -557,11 +630,14 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             ? snapshot.proposal
             : undefined,
       };
-    const memories = await this.db.memory.findMany({
-      where: { characterId: dto.characterId },
-      orderBy: { importance: "desc" },
-      take: 12,
-    });
+    const [memories, habitProfile] = await Promise.all([
+      this.db.memory.findMany({
+        where: { characterId: dto.characterId },
+        orderBy: { importance: "desc" },
+        take: 12,
+      }),
+      this.habits(90),
+    ]);
     const signal = AbortSignal.timeout(120000),
       release = await this.gate.acquire(signal);
     let output: ChatOutput;
@@ -605,6 +681,21 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           goals: snapshot.goals,
           sessions: relevant,
           weekly: weeklyReview(snapshot),
+          habitProfile: {
+            from: habitProfile.from, to: habitProfile.to,
+            activityCount: habitProfile.activityCount,
+            missingActualStarts: habitProfile.missingActualStarts,
+            clusters: habitProfile.activities.slice(0, 8).map((activity) => ({
+              activityKey: activity.activityKey,
+              name: activity.name,
+              total: activity.total, done: activity.done,
+              cancelled: activity.cancelled, missed: activity.missed,
+              observedActualSamples: activity.actualSamples,
+              averageActualMinutes: activity.averageActualMinutes,
+              preferredStart: activity.recurringPattern ? activity.preferredStart : null,
+            })),
+            recommendations: habitProfile.recommendations,
+          },
         },
         dto.message,
       );
@@ -1356,7 +1447,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     }, true);
   }
   async advice(dto: AdviceDto) {
-    const state = await this.get();
+    const [state, habitProfile] = await Promise.all([this.get(), this.habits(90)]);
     const signal = AbortSignal.timeout(120000);
     const release = await this.gate.acquire(signal);
     try {
@@ -1380,6 +1471,12 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                 .slice(0, 100),
               progress: state.progress,
               weeklyReview: state.weekly,
+              habitProfile: {
+                from: habitProfile.from, to: habitProfile.to,
+                missingActualStarts: habitProfile.missingActualStarts,
+                activities: habitProfile.activities.slice(0, 8),
+                recommendations: habitProfile.recommendations,
+              },
             }),
           },
         ],
@@ -1403,6 +1500,15 @@ class PlannerController {
   }
   @Post("events/proposal") adaptiveEvent(@Body() d: EventDto) {
     return this.planner.adaptiveEvent(d);
+  }
+  @Get("habits") habits(@Query("days") days?: string) {
+    return this.planner.habits(days === undefined ? 90 : Number(days));
+  }
+  @Get("habits/events") habitEvents(@Query("limit") limit?: string) {
+    return this.planner.habitEvents(limit === undefined ? 100 : Number(limit));
+  }
+  @Post("sessions/:id/start") start(@Param("id") id: string) {
+    return this.planner.startSession(id);
   }
   @Post("weekly-review") weeklyReview() {
     return this.planner.weeklyAnalysis();

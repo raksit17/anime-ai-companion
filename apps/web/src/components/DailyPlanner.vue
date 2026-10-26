@@ -20,6 +20,7 @@ type Session = {
   status: string;
   fixed: boolean;
   completedAt?: string;
+  actualStartedAt?: string;
 };
 type PlannerFollowUp = {
   label: string;
@@ -73,6 +74,12 @@ const date = ref(today()),
   editStart = ref(""),
   editDuration = ref(30),
   editError = ref("");
+type HabitSuggestion = {
+  activityKey: string; name: string; suggestedMinutes: number;
+  preferredStart: number; evidenceCount: number; reason: string;
+};
+const habitSuggestions = ref<HabitSuggestion[]>([]),
+  habitTip = ref(""), habitLoading = ref(false), showHabitSuggestions = ref(false);
 const input = ref(""),
   error = ref(""),
   busy = ref(false),
@@ -518,6 +525,52 @@ async function removeSession(session: Session) {
     busy.value = false;
   }
 }
+async function showHistoryRecommendations() {
+  if (habitLoading.value) return;
+  showHabitSuggestions.value = !showHabitSuggestions.value;
+  if (!showHabitSuggestions.value) return;
+  habitLoading.value = true;
+  habitTip.value = "";
+  try {
+    const result = await api<{
+      recommendations: HabitSuggestion[];
+      activityCount: number;
+    }>("/planner/habits?days=90");
+    habitSuggestions.value = result.recommendations;
+    if (!result.recommendations.length)
+      habitTip.value = result.activityCount
+        ? "ยังมีข้อมูลทำสำเร็จซ้ำไม่พอ ยูนะจะยังไม่เดาว่านี่เป็นนิสัยประจำ"
+        : "ยังไม่มีประวัติกิจกรรมจริงให้วิเคราะห์ค่ะ";
+  } catch (e) {
+    habitTip.value = String(e);
+  } finally {
+    habitLoading.value = false;
+  }
+}
+function prepareHabitSuggestion(suggestion: HabitSuggestion) {
+  // Never auto-save a historical recommendation; user must send and
+  // confirm the resulting proposal. The task is not created yet.
+  input.value = "พรุ่งนี้ เพิ่มงาน " + suggestion.name + " เวลา " +
+    clock(suggestion.preferredStart) + " นาน " +
+    suggestion.suggestedMinutes + " นาที";
+  autoApply.value = false;
+  showHabitSuggestions.value = false;
+}
+async function startActualSession(s: Session) {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    await api("/planner/sessions/" + encodeURIComponent(s.id) + "/start", "POST");
+    await refresh();
+    reorderMessage.value = "บันทึกเวลาเริ่มทำจริงของ " + s.name + " แล้ว";
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function mark(s: Session, status: string) {
   if (busy.value) return;
   error.value = "";
@@ -592,10 +645,33 @@ watch(advanced, (value) => {
         <h2>วันนี้กับ{{ companion.character?.name || "ยูนะ" }}</h2>
         <p>บอกสิ่งที่อยากทำ แล้วมาจัดวันของคุณด้วยกัน</p>
       </div>
-      <button class="quiet" @click="advanced = !advanced">
-        {{ advanced ? "กลับตารางวันนี้" : "ตั้งค่าเพิ่มเติม" }}
-      </button>
+      <div class="planner-header-actions">
+        <button class="quiet" @click="showHistoryRecommendations"
+          :disabled="habitLoading">
+          {{ showHabitSuggestions ? "ซ่อนคำแนะนำ" : "แนะนำแผนตามประวัติ" }}
+        </button>
+        <button class="quiet" @click="advanced = !advanced">
+          {{ advanced ? "กลับตารางวันนี้" : "ตั้งค่าเพิ่มเติม" }}
+        </button>
+      </div>
     </header>
+    <section v-if="showHabitSuggestions" class="habit-suggestions" aria-label="แนะนำจากประวัติจริง">
+      <strong>ไอเดียจากกิจกรรมที่ผ่านมา (90 วัน)</strong>
+      <p v-if="habitLoading">กำลังตรวจประวัติกิจกรรมจริง…</p>
+      <p v-if="habitTip">{{ habitTip }}</p>
+      <div v-for="suggestion in habitSuggestions" :key="suggestion.activityKey"
+        class="habit-suggestion-item">
+        <div>
+          <strong>{{ suggestion.name }}</strong>
+          <p>ช่วงที่เคยทำสำเร็จ {{ clock(suggestion.preferredStart) }}
+            · {{ suggestion.evidenceCount }} ครั้ง · เสนอ {{ suggestion.suggestedMinutes }} นาที</p>
+        </div>
+        <button type="button" @click="prepareHabitSuggestion(suggestion)">
+          ใส่ในช่องคุย (ยังไม่บันทึก)
+        </button>
+      </div>
+      <p class="muted">คำแนะนำไม่เปลี่ยนตารางเอง และไม่ตีความประวัติแชตว่าเป็นกิจกรรมที่ทำจริง</p>
+    </section>
     <p v-if="error" role="alert" class="error">
       {{ error }} <button @click="error = ''">ปิด</button>
     </p>
@@ -823,6 +899,13 @@ watch(advanced, (value) => {
                 </div>
               </form>
               <div v-if="s.status === 'planned'" class="task-actions">
+                <button v-if="s.date === today() && !s.actualStartedAt"
+                  :disabled="busy" type="button" @click="startActualSession(s)">
+                  ▶ เริ่ม (บันทึกเวลาจริง)
+                </button>
+                <span v-else-if="s.actualStartedAt" class="actual-start-notice">
+                  เริ่มจริง {{ new Date(s.actualStartedAt).toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false }) }}
+                </span>
                 <button :disabled="busy" @click="mark(s, 'done')">
                   ✓ เสร็จแล้ว</button
                 ><button
@@ -1308,6 +1391,12 @@ watch(advanced, (value) => {
   background: #f0f7e9;
 }
 .reorder-dragging { opacity: 0.55; }
+.planner-header-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.habit-suggestions { padding: 14px; border: 1px solid #d5dfd0; background: #f8faf6; border-radius: 12px; margin-bottom: 12px; }
+.habit-suggestion-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #d5dfd0; padding: 9px 0; flex-wrap: wrap; }
+.habit-suggestion-item p { color: #64735c; font-size: 11px; margin: 4px 0; }
+.habit-suggestion-item button { border: 1px solid #9bad93; border-radius: 8px; padding: 8px; background: #edf3e8; }
+.actual-start-notice { color: #587252; font-size: 11px; }
 .actual-completion {
   display: flex;
   flex-wrap: wrap;
