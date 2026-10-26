@@ -70,7 +70,6 @@ import {
   editDaySessionTime,
   finishSessionNow,
   startSessionNow,
-  sessionActivityIdentity,
   classifyActivity,
   actualWorkedMinutes,
   releasedEarlyMinutes,
@@ -149,14 +148,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       const before = mutate ? structuredClone(state.sessions) : [];
       const result = fn(state);
       if (mutate) {
-        for (const session of state.sessions) {
-          // Backfill old JSON records on the next legitimate write.
-          if (!session.activityKey || !session.category) {
-            Object.assign(session, sessionActivityIdentity({
-              ...session, activityKey: undefined, category: undefined,
-            }));
-          }
-        }
+        // Keep legacy session objects byte-for-byte compatible. Historical
+        // identity is derived on read and written into immutable audit events.
         const events = diffSessionEvents(before, state.sessions);
         // The journal and state commit atomically in PostgreSQL. Existing
         // in-memory unit-test fixtures without a journal delegate are safe.
