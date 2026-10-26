@@ -48,6 +48,7 @@ type Habits = {
   missingActualStarts: number;
   activities: HabitActivity[];
   categories: Array<{ category: string; total: number; done: number }>;
+  timeClusters?: Array<{ start: number; count: number }>;
   eventKinds: Array<{ kind: string; count: number }>;
   recommendations: Array<{
     activityKey: string; name: string; category: string;
@@ -295,6 +296,7 @@ async function checkNotifications() {
               @change="run(async () => {
                 habits = await api('/planner/habits?days=' + daysWindow);
               })">
+              <option :value="7">7 วัน</option>
               <option :value="30">30 วัน</option>
               <option :value="90">90 วัน</option>
               <option :value="180">180 วัน</option>
@@ -311,6 +313,15 @@ async function checkNotifications() {
           <p class="muted small" v-if="habits.missingActualStarts">
             {{ habits.missingActualStarts }} งานที่เสร็จแล้วยังไม่มีเวลาเริ่มจริง จึงไม่คำนวณเวลาทำจริงจากกำหนดการ
           </p>
+          <h3>ช่วงเวลาที่ทำสำเร็จบ่อย (Time Clusters)</h3>
+          <div v-if="habits.timeClusters?.length" class="habit-time-clusters">
+            <div v-for="slot in habits.timeClusters.slice(0, 8)"
+              :key="slot.start" class="habit-time-bin">
+              <strong>{{ clock(slot.start) }}–{{ clock(slot.start + 30) }}</strong>
+              <small>สำเร็จ {{ slot.count }} ครั้ง</small>
+            </div>
+          </div>
+          <p v-else class="muted small">ยังไม่มีข้อมูลกิจกรรมที่ยืนยันว่าทำสำเร็จ</p>
           <h3>กลุ่มกิจกรรม (Habit Clusters)</h3>
           <div v-if="!habits.activities.length" class="muted small">
             ยังไม่มีประวัติกิจกรรมในช่วงนี้ ระบบจะไม่เดานิสัยจากข้อความแชต
@@ -722,6 +733,8 @@ async function checkNotifications() {
 .planner textarea {
   width: 100%;
 }
+.habit-time-clusters { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.habit-time-bin { display: flex; flex-direction: column; gap: 4px; min-width: 140px; padding: 8px 10px; border: 1px solid #738b8555; border-radius: 8px; }
 .habit-suggestion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .habit-range select { max-width: 160px; }
 .habit-stats { display: flex; gap: 10px; flex-wrap: wrap; }
