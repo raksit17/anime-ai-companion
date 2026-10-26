@@ -71,6 +71,7 @@ import {
   finishSessionNow,
   startSessionNow,
   sessionActivityIdentity,
+  classifyActivity,
   actualWorkedMinutes,
   releasedEarlyMinutes,
   initial,
@@ -228,8 +229,11 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       state.sessions,
       events.map((event) => ({
         ...event,
-        before: event.before as Session | null,
-        after: event.after as Session | null,
+        before: event.before as unknown as Session | null,
+        after: event.after as unknown as Session | null,
+        category: classifyActivity(
+          ((event.after ?? event.before) as unknown as Session | null)?.name ?? "",
+        ),
       })),
       durationDays,
     );
