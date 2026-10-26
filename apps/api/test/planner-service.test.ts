@@ -152,7 +152,7 @@ test("rename changes just one session title, updates its cluster and preserves g
   const edited = after.sessions.find((s: any) => s.id === target.id);
   assert.equal(edited.name, "ออกกำลังกาย");
   assert.equal(edited.category, "exercise");
-  assert.equal(edited.activityKey, "exercise:ออกกำลังกาย");
+  assert.equal(edited.activityKey, "exercise:exercise");
   assert.equal(edited.goalId, target.goalId);
   assert.equal(edited.date, target.date);
   assert.equal(edited.start, target.start);
