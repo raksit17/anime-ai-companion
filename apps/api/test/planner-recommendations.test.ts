@@ -100,3 +100,55 @@ test("reject invalid dates and respects recurring goal weekday and rest constrai
   state.suppressedOccurrences = { bbc: [target] };
   assert.equal(recommendDay(state, target, "normal", now).suggestions.length, 0);
 });
+
+test("4-day trial uses previous four COMPLETE days and can suggest one verified task", () => {
+  const nowFour = Date.parse("2026-10-26T11:30:00+07:00");
+  const state = initial();
+  state.sessions = [
+    done("2026-10-21", 1, { name: "เรียน TOEIC" }), // Out of window
+    done("2026-10-24", 2, { name: "ทำความสะอาดห้อง", start: 600, duration: 30 }),
+    done("2026-10-26", 3, { name: "ออกกำลังกาย" }), // Today is incomplete
+  ];
+  const result = recommendDay(state, "2026-10-27", "normal", nowFour, 4);
+  assert.equal(result.mode, "recent-trial");
+  assert.equal(result.lookbackDays, 4);
+  assert.equal(result.analysisFrom, "2026-10-22");
+  assert.equal(result.analysisTo, "2026-10-25");
+  assert.equal(result.suggestions.length, 1);
+  assert.equal(result.suggestions[0].name, "ทำความสะอาดห้อง");
+  assert.equal(result.suggestions[0].evidenceCount, 1);
+  assert.equal(result.suggestions[0].confidence, "low");
+  assert.match(result.suggestions[0].reason, /ยังไม่ยืนยันว่าเป็นกิจวัตร/);
+  assert.equal(state.sessions.length, 3);
+  // The same sparse history must not become a confirmed long-term habit.
+  assert.equal(recommendDay(state, "2026-10-27", "normal", nowFour, 90).suggestions.length, 0);
+});
+test("4-day trial can reflow past morning clock later today without changing old sessions", () => {
+  const nowFour = Date.parse("2026-10-26T11:30:00+07:00");
+  const state = initial();
+  state.sessions = [done("2026-10-24", 1, {
+    name: "เรียนภาษาอังกฤษ", start: 510, duration: 30,
+  })];
+  const result = recommendDay(state, "2026-10-26", "normal", nowFour, 4);
+  assert.equal(result.suggestions.length, 1);
+  assert.ok(result.suggestions[0].plannedStart >= 690);
+  assert.match(result.suggestions[0].reason, /เลื่อนเวลาเสนอเป็น/);
+});
+test("4-day trial ignores one-off locked appointments, duplicates and capacity collisions", () => {
+  const nowFour = Date.parse("2026-10-26T11:30:00+07:00");
+  const state = initial();
+  state.sessions = [
+    done("2026-10-24", 1, { name: "ประชุม", fixed: true }),
+    done("2026-10-24", 2, { name: "เรียน TOEIC", start: 540 }),
+  ];
+  const trial = recommendDay(state, "2026-10-27", "normal", nowFour, 4);
+  assert.deepEqual(trial.suggestions.map((s) => s.name), ["เรียน TOEIC"]);
+  state.sessions.push({
+    id: "existing", name: "เรียน TOEIC", date: "2026-10-27",
+    start: 540, duration: 30, fixed: false, status: "planned", reminder: 10,
+  });
+  assert.equal(recommendDay(state, "2026-10-27", "normal", nowFour, 4).suggestions.length, 0);
+  state.sessions.pop();
+  state.settings.maxMinutes = 10;
+  assert.equal(recommendDay(state, "2026-10-27", "normal", nowFour, 4).suggestions.length, 0);
+});

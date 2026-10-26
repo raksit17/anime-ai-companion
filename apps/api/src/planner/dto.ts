@@ -40,6 +40,10 @@ export class PlanDto {
   @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/) date!: string;
   @IsIn(["normal", "low"]) energy!: "normal" | "low";
 }
+/** Optional 4-day trial window; ordinary long-term planning remains unchanged. */
+export class RecommendationDto extends PlanDto {
+  @IsOptional() @IsInt() @Min(4) @Max(365) days?: number;
+}
 export class MoveDto {
   @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/) date!: string;
   @IsInt() @Min(0) @Max(1439) start!: number;
