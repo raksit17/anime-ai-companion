@@ -92,8 +92,9 @@ export function computeHabitProfile(
     total: number; done: number; skipped: number; missed: number;
     pending: number; cancelled: number; scheduledMinutes: number;
     observedActualMinutes: number; actualSamples: number;
-    starts: number[]; weekdays: Record<number, number>;
+    starts: number[]; doneDates: string[]; weekdays: Record<number, number>;
   }>();
+  const timeBuckets = new Map<number, number>();
   for (const { session: s, cancelled } of rows) {
     const identity = {
       activityKey: s.activityKey ?? activityKeyFor(s.name),
@@ -104,7 +105,7 @@ export function computeHabitProfile(
       group = { ...identity, name: s.name, total: 0, done: 0,
         skipped: 0, missed: 0, pending: 0, cancelled: 0,
         scheduledMinutes: 0, observedActualMinutes: 0, actualSamples: 0,
-        starts: [], weekdays: {} };
+        starts: [], doneDates: [], weekdays: {} };
       clusters.set(identity.activityKey, group);
     }
     group.total++;
@@ -113,6 +114,9 @@ export function computeHabitProfile(
     else if (s.status === "done") {
       group.done++;
       group.starts.push(s.start);
+      group.doneDates.push(s.date);
+      const bucket = Math.floor(s.start / 30) * 30;
+      timeBuckets.set(bucket, (timeBuckets.get(bucket) ?? 0) + 1);
       const actual = actualWorkedMinutes(s);
       if (actual !== null) { group.observedActualMinutes += actual; group.actualSamples++; }
       const weekday = new Date(s.date).getUTCDay();
@@ -122,7 +126,7 @@ export function computeHabitProfile(
       group.missed++;
     else group.pending++;
   }
-  const activities = [...clusters.values()].map(({ starts, weekdays, ...group }) => {
+  const activities = [...clusters.values()].map(({ starts, weekdays, doneDates, ...group }) => {
     const sorted = starts.sort((a, b) => a - b);
     const medianStart = sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : null;
     const preferredWeekday = Object.entries(weekdays).sort((a, b) =>
@@ -136,7 +140,8 @@ export function computeHabitProfile(
       preferredStart: medianStart,
       preferredWeekday: preferredWeekday === undefined ? null : Number(preferredWeekday),
       evidenceCount: group.done,
-      recurringPattern: group.done >= 3,
+      recurringPattern: group.done >= 3 &&
+        new Set(doneDates.map((date) => Math.floor(Date.parse(date) / 604800000))).size >= 2,
     };
   }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
   const categories = [...new Set(activities.map((s) => s.category))].map((category) => ({
@@ -160,6 +165,8 @@ export function computeHabitProfile(
       reason: "พบการทำสำเร็จ " + a.done +
         " ครั้งใน " + durationDays + " วัน (เป็นข้อเสนอ ไม่ใช่กำหนดการอัตโนมัติ)",
     }));
+  const timeClusters = [...timeBuckets].sort((a, b) => b[1] - a[1])
+    .map(([start, count]) => ({ start, count }));
   const eventKinds = [...new Set(events.map((event) => event.kind))].map((kind) => ({
     kind, count: events.filter((event) => event.kind === kind &&
       new Date(event.occurredAt).getTime() >= Date.parse(start)).length,
@@ -171,7 +178,7 @@ export function computeHabitProfile(
     cancelled: rows.filter(({ cancelled }) => cancelled).length,
     missingActualStarts: rows.filter(({ session, cancelled }) =>
       !cancelled && session.status === "done" && !session.actualStartedAt).length,
-    activities, categories, eventKinds, recommendations,
+    activities, categories, timeClusters, eventKinds, recommendations,
     note: "สถิติอ้างอิงประวัติกิจกรรมที่บันทึกจริง ไม่ใช้แชตเดาผล งานเสร็จที่ไม่กดเริ่มจะไม่มีระยะเวลาทำจริง",
   };
 }

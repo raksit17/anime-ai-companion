@@ -48,6 +48,7 @@ type Habits = {
   missingActualStarts: number;
   activities: HabitActivity[];
   categories: Array<{ category: string; total: number; done: number }>;
+  timeClusters?: Array<{ start: number; count: number }>;
   eventKinds: Array<{ kind: string; count: number }>;
   recommendations: Array<{
     activityKey: string; name: string; category: string;
@@ -62,6 +63,16 @@ type Proposal = {
   unscheduled: string[];
   reasons?: string[];
   breakMinutes?: number;
+  source?: "habits";
+  suggestions?: Array<{
+    sessionId: string;
+    name: string;
+    evidenceCount: number;
+    preferredStart: number;
+    plannedStart: number;
+    confidence: "high" | "medium";
+    reason: string;
+  }>;
 };
 type Weekly = {
   from: string;
@@ -167,6 +178,17 @@ async function run(fn: () => Promise<void>) {
   } finally {
     busy.value = false;
   }
+}
+const bangkokDate = (offsetDays = 0) =>
+  new Date(Date.now() + (7 + offsetDays * 24) * 3600000)
+    .toISOString().slice(0, 10);
+async function suggestHabitPlan(targetDate: string) {
+  await run(async () => {
+    date.value = targetDate;
+    proposal.value = await api<Proposal>("/planner/recommendations/preview", "POST", {
+      date: targetDate, energy: energy.value,
+    });
+  });
 }
 async function saveGoal() {
   await run(async () => {
@@ -274,6 +296,7 @@ async function checkNotifications() {
               @change="run(async () => {
                 habits = await api('/planner/habits?days=' + daysWindow);
               })">
+              <option :value="7">7 วัน</option>
               <option :value="30">30 วัน</option>
               <option :value="90">90 วัน</option>
               <option :value="180">180 วัน</option>
@@ -290,6 +313,15 @@ async function checkNotifications() {
           <p class="muted small" v-if="habits.missingActualStarts">
             {{ habits.missingActualStarts }} งานที่เสร็จแล้วยังไม่มีเวลาเริ่มจริง จึงไม่คำนวณเวลาทำจริงจากกำหนดการ
           </p>
+          <h3>ช่วงเวลาที่ทำสำเร็จบ่อย (Time Clusters)</h3>
+          <div v-if="habits.timeClusters?.length" class="habit-time-clusters">
+            <div v-for="slot in habits.timeClusters.slice(0, 8)"
+              :key="slot.start" class="habit-time-bin">
+              <strong>{{ clock(slot.start) }}–{{ clock(slot.start + 30) }}</strong>
+              <small>สำเร็จ {{ slot.count }} ครั้ง</small>
+            </div>
+          </div>
+          <p v-else class="muted small">ยังไม่มีข้อมูลกิจกรรมที่ยืนยันว่าทำสำเร็จ</p>
           <h3>กลุ่มกิจกรรม (Habit Clusters)</h3>
           <div v-if="!habits.activities.length" class="muted small">
             ยังไม่มีประวัติกิจกรรมในช่วงนี้ ระบบจะไม่เดานิสัยจากข้อความแชต
@@ -376,6 +408,21 @@ async function checkNotifications() {
           <option value="low">น้อย — กิจกรรมใหม่ไม่เกิน 20 นาที</option>
         </select></label
       >
+      <div class="habit-suggestion-actions">
+        <button type="button" class="primary" @click="suggestHabitPlan(bangkokDate())">
+          ✨ แนะนำแผนวันนี้จากประวัติ
+        </button>
+        <button type="button" @click="suggestHabitPlan(bangkokDate(1))">
+          ✨ แนะนำแผนพรุ่งนี้จากประวัติ
+        </button>
+        <button type="button" @click="suggestHabitPlan(date)">
+          แนะนำแผนวันที่เลือก
+        </button>
+      </div>
+      <p class="muted small">
+        เรียนรู้จากกิจกรรมที่ทำสำเร็จซ้ำในหลายสัปดาห์เท่านั้น
+        แผนเป็นตัวอย่าง ไม่บันทึกหรือย้ายงานอื่นจนกดยืนยัน
+      </p>
       <button
         class="primary"
         @click="
@@ -407,6 +454,21 @@ async function checkNotifications() {
       </p>
       <div v-if="proposal" class="planner-card">
         <h3>ตัวอย่างก่อนบันทึก</h3>
+        <template v-if="proposal.source === 'habits'">
+          <p class="muted small">
+            ระบบตรวจประวัติการทำจริง เวลาที่เคยสำเร็จ และข้อจำกัดตาราง
+            ก่อนเสนอสล็อตใหม่ ไม่มีการเปลี่ยนแผนอัตโนมัติ
+          </p>
+          <article v-for="suggestion in proposal.suggestions"
+            :key="suggestion.sessionId" class="habit-cluster">
+            <strong>{{ suggestion.name }}</strong>
+            <p class="muted small">
+              พบทำสำเร็จ {{ suggestion.evidenceCount }} ครั้ง ·
+              ความมั่นใจ {{ suggestion.confidence === 'high' ? 'สูง' : 'ปานกลาง' }}
+            </p>
+            <p class="muted small">{{ suggestion.reason }}</p>
+          </article>
+        </template>
         <p v-if="proposal.breakMinutes">
           เว้นพักอย่างน้อย {{ proposal.breakMinutes }} นาที
         </p>
@@ -430,6 +492,7 @@ async function checkNotifications() {
         <p v-for="u in proposal.unscheduled" :key="u" class="muted">{{ u }}</p>
         <button
           class="primary"
+          :disabled="!preview.length"
           @click="
             run(async () => {
               await api(`/planner/proposals/${proposal!.id}/confirm`, 'POST');
@@ -670,6 +733,9 @@ async function checkNotifications() {
 .planner textarea {
   width: 100%;
 }
+.habit-time-clusters { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.habit-time-bin { display: flex; flex-direction: column; gap: 4px; min-width: 140px; padding: 8px 10px; border: 1px solid #738b8555; border-radius: 8px; }
+.habit-suggestion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .habit-range select { max-width: 160px; }
 .habit-stats { display: flex; gap: 10px; flex-wrap: wrap; }
 .habit-stats p { min-width: 105px; padding: 10px; border: 1px solid #738b8555; border-radius: 8px; }
