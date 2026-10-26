@@ -22,6 +22,40 @@ type Goal = {
   reminder: number;
   flexible: boolean;
 };
+type HabitActivity = {
+  activityKey: string;
+  category: string;
+  name: string;
+  total: number;
+  done: number;
+  skipped: number;
+  missed: number;
+  cancelled: number;
+  completionRate: number | null;
+  averageActualMinutes: number | null;
+  actualSamples: number;
+  evidenceCount: number;
+  recurringPattern: boolean;
+  preferredStart: number | null;
+};
+type Habits = {
+  from: string;
+  to: string;
+  days: number;
+  activityCount: number;
+  completed: number;
+  cancelled: number;
+  missingActualStarts: number;
+  activities: HabitActivity[];
+  categories: Array<{ category: string; total: number; done: number }>;
+  eventKinds: Array<{ kind: string; count: number }>;
+  recommendations: Array<{
+    activityKey: string; name: string; category: string;
+    evidenceCount: number; preferredStart: number;
+    reason: string;
+  }>;
+  note: string;
+};
 type Proposal = {
   id: string;
   sessions: Session[];
@@ -46,6 +80,8 @@ type Weekly = {
     rate: number;
   }[];
 };
+const habits = ref<Habits>();
+const daysWindow = ref(90);
 const data = ref<{
   weekly: Weekly;
   weeklyReport?: { text: string; generatedAt: string };
@@ -116,6 +152,7 @@ const preview = computed(
 );
 async function load() {
   data.value = await api("/planner");
+  habits.value = await api<Habits>("/planner/habits?days=" + daysWindow.value);
   wake.value = clock(data.value!.settings.wake);
   sleep.value = clock(data.value!.settings.sleep);
 }
@@ -229,6 +266,66 @@ async function checkNotifications() {
       แจ้งเตือนเมื่อ API และหน้าต่างแอปเปิดอยู่ ตรวจทุก 30 วินาที
     </p>
     <fieldset :disabled="busy">
+      <details open class="habit-dashboard">
+        <summary>วิเคราะห์นิสัยและประวัติกิจกรรมระยะยาว</summary>
+        <div class="habit-range">
+          <label>ช่วงย้อนหลัง
+            <select v-model.number="daysWindow"
+              @change="run(async () => {
+                habits = await api('/planner/habits?days=' + daysWindow);
+              })">
+              <option :value="30">30 วัน</option>
+              <option :value="90">90 วัน</option>
+              <option :value="180">180 วัน</option>
+              <option :value="365">365 วัน</option>
+            </select>
+          </label>
+        </div>
+        <template v-if="habits">
+          <div class="habit-stats">
+            <p><strong>{{ habits.activityCount }}</strong><small>กิจกรรมในประวัติ</small></p>
+            <p><strong>{{ habits.completed }}</strong><small>ทำเสร็จ</small></p>
+            <p><strong>{{ habits.cancelled }}</strong><small>ยกเลิก/ลบสล็อต</small></p>
+          </div>
+          <p class="muted small" v-if="habits.missingActualStarts">
+            {{ habits.missingActualStarts }} งานที่เสร็จแล้วยังไม่มีเวลาเริ่มจริง จึงไม่คำนวณเวลาทำจริงจากกำหนดการ
+          </p>
+          <h3>กลุ่มกิจกรรม (Habit Clusters)</h3>
+          <div v-if="!habits.activities.length" class="muted small">
+            ยังไม่มีประวัติกิจกรรมในช่วงนี้ ระบบจะไม่เดานิสัยจากข้อความแชต
+          </div>
+          <article v-for="h in habits.activities" :key="h.activityKey" class="habit-cluster">
+            <div class="habit-cluster-head">
+              <strong>{{ h.name }}</strong>
+              <small>{{ h.category }} · {{ h.total }} ครั้ง</small>
+            </div>
+            <div class="habit-track">
+              <span :style="{ width: ((h.done / Math.max(h.total, 1)) * 100) + '%' }"></span>
+            </div>
+            <p class="muted small">
+              สำเร็จ {{ h.done }} · ข้าม {{ h.skipped }} · เลยกำหนด {{ h.missed }} · ยกเลิก {{ h.cancelled }}
+              <template v-if="h.actualSamples">
+                · เวลาทำจริงเฉลี่ย {{ h.averageActualMinutes }} นาที ({{ h.actualSamples }} ครั้งที่วัดได้)
+              </template>
+            </p>
+            <p class="muted small" v-if="!h.recurringPattern">
+              ข้อมูลสำเร็จยังไม่ถึง 3 ครั้ง จึงยังไม่สรุปว่าเป็นนิสัยประจำ
+            </p>
+          </article>
+          <h3>ข้อเสนอจากประวัติ</h3>
+          <p v-if="!habits.recommendations.length" class="muted small">
+            ยังมีข้อมูลซ้ำที่น่าเชื่อถือไม่พอสำหรับเสนอเวลาอัตโนมัติ
+          </p>
+          <article v-for="suggestion in habits.recommendations"
+            :key="suggestion.activityKey" class="habit-cluster">
+            <strong>{{ suggestion.name }}</strong>
+            <p>{{ clock(suggestion.preferredStart) }} ·
+              พบทำสำเร็จ {{ suggestion.evidenceCount }} ครั้ง</p>
+            <p class="muted small">{{ suggestion.reason }}</p>
+          </article>
+          <p class="muted small">{{ habits.note }}</p>
+        </template>
+      </details>
       <details open v-if="data?.weekly" class="weekly">
         <summary>
           ทบทวนสัปดาห์ก่อน {{ data.weekly.from }} – {{ data.weekly.to }}
@@ -573,6 +670,15 @@ async function checkNotifications() {
 .planner textarea {
   width: 100%;
 }
+.habit-range select { max-width: 160px; }
+.habit-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+.habit-stats p { min-width: 105px; padding: 10px; border: 1px solid #738b8555; border-radius: 8px; }
+.habit-stats strong { display: block; font-size: 22px; }
+.habit-stats small { display: block; color: #738b85; }
+.habit-cluster { margin: 10px 0; padding: 11px; border: 1px solid #738b8555; border-radius: 10px; }
+.habit-cluster-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.habit-track { margin: 10px 0 5px; height: 6px; border-radius: 6px; background: #dddfe0; overflow: hidden; }
+.habit-track span { display: block; height: 100%; border-radius: inherit; background: #7b916d; }
 .planner-card {
   padding: 12px;
   border: 1px solid #738b8555;
