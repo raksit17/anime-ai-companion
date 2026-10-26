@@ -84,6 +84,7 @@ import {
 } from "./engine";
 import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "./history";
 import { recommendDay, type HabitDayPreview } from "./recommendations";
+import { analyzeDay } from "./day-analytics";
 type Proposal = {
   reasons?: string[];
   breakMinutes?: number;
@@ -210,6 +211,10 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           .reduce((n, x) => n + releasedEarlyMinutes(x), 0),
       },
     }));
+  }
+  dayAnalytics(date: string) {
+    if (!validDate(date)) throw new BadRequestException("วันที่ไม่ถูกต้อง");
+    return this.access((state) => analyzeDay(state, date));
   }
   async habits(days = 90) {
     const durationDays = Number.isFinite(days)
@@ -1521,6 +1526,9 @@ class PlannerController {
   }
   @Post("events/proposal") adaptiveEvent(@Body() d: EventDto) {
     return this.planner.adaptiveEvent(d);
+  }
+  @Get("daily-analytics") dailyAnalytics(@Query("date") date: string) {
+    return this.planner.dayAnalytics(date);
   }
   @Get("habits") habits(@Query("days") days?: string) {
     return this.planner.habits(days === undefined ? 90 : Number(days));
