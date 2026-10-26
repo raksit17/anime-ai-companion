@@ -132,6 +132,9 @@ export function parseScheduledAdd(
     .replace(/^(?:ขอ|ช่วย|อยากให้|ให้ยูนะ)\s*/u, "")
     .replace(/^(?:เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?|จัด(?:ตาราง)?(?:งาน|กิจกรรม)?|ลงตาราง)\s*/u, "")
     .replace(/(?:ลงในตารางจริง|ลงตาราง|ในตาราง|ให้ด้วย|ด้วย|หน่อย|นะ|ค่ะ|ครับ)\s*$/u, "")
+    // Removing "ช่วง 20:00" from "เรียน toeic ในช่วง 20:00"
+    // leaves an orphan Thai preposition. This is not part of the title.
+    .replace(/\s+(?:ใน|ตอน|ช่วง)\s*$/u, "")
     .trim();
   // Avoid treating questions like "ว่างช่วง 15:00 ไหม" as add requests.
   if (!/^(?:ฝึก|ทำ|เขียน|อ่าน|เรียน|ติว|ออกกำลัง|ออกกำลังกาย|Coding|Code|[A-Za-z])/iu.test(input) &&
