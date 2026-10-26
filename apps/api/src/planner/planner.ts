@@ -89,6 +89,7 @@ import {
 } from "./engine";
 import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "./history";
 import { recommendDay, type HabitDayPreview } from "./recommendations";
+import { parseHistoricalBatch, planHistoricalBatch } from "./historical-batch";
 import { analyzeDay } from "./day-analytics";
 type Proposal = {
   reasons?: string[];
@@ -713,6 +714,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let timedAdd: ReturnType<typeof parseScheduledAdd>;
     let multipleAdds: ReturnType<typeof parseMultipleNewTasks>;
     let naturalTimedBatch: ReturnType<typeof parseNaturalThaiTimedBatch>;
+    let historicalBatch: ReturnType<typeof parseHistoricalBatch>;
     let alternativeBatch: ReturnType<typeof parseMultipleNewTasks>;
     let shiftedBatch: ReturnType<typeof parseGroupShiftPlan>;
     let insertInquiry: ReturnType<typeof previewInsertionMinutes>;
@@ -750,6 +752,17 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           goals: snapshot.goals,
           sessions: relevant,
           weekly: weeklyReview(snapshot),
+          recentFourDays: {
+            note: "Historical saved sessions: planned is NOT proof of completed work; only done is completed.",
+            from: new Date(Date.parse(today()) - 4 * 86400000).toISOString().slice(0, 10),
+            to: new Date(Date.parse(today()) - 86400000).toISOString().slice(0, 10),
+            sessions: snapshot.sessions.filter((s) =>
+              s.date >= new Date(Date.parse(today()) - 4 * 86400000).toISOString().slice(0, 10) &&
+              s.date < today()).slice(-80).map((s) => ({
+                name: s.name, date: s.date, start: s.start,
+                duration: s.duration, status: s.status,
+              })),
+          },
           habitProfile: {
             from: habitProfile.from, to: habitProfile.to,
             activityCount: habitProfile.activityCount,
@@ -779,30 +792,32 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               !snapshot.sessions.some((previous) => previous.id === task.id))
           : [];
       naturalTimedBatch = parseNaturalThaiTimedBatch(dto.message, dto.date);
-      finishIntent = naturalTimedBatch ? undefined :
+      historicalBatch = naturalTimedBatch ? undefined :
+        parseHistoricalBatch(dto.message, dto.date);
+      finishIntent = naturalTimedBatch || historicalBatch ? undefined :
         parseFinishNowIntent(snapshot, dto.date, dto.message);
-      insertInquiry = finishIntent || naturalTimedBatch ? undefined :
+      insertInquiry = finishIntent || naturalTimedBatch || historicalBatch ? undefined :
         previewInsertionMinutes(snapshot, dto.date, dto.message);
-      shiftedBatch = insertInquiry || finishIntent || naturalTimedBatch ? undefined : parseGroupShiftPlan(
+      shiftedBatch = insertInquiry || finishIntent || naturalTimedBatch || historicalBatch ? undefined : parseGroupShiftPlan(
         snapshot, dto.date, dto.message, pendingProposal,
         latestReply?.role === "assistant" &&
           latestReply.outcome?.startsWith("รอยืนยันแผนเพิ่ม")
           ? latestReply.content : "",
       );
-      durationEdit = shiftedBatch || insertInquiry || finishIntent || naturalTimedBatch ? undefined :
+      durationEdit = shiftedBatch || insertInquiry || finishIntent || naturalTimedBatch || historicalBatch ? undefined :
         parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
         parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      const directMultipleAdds = naturalTimedBatch ??
+      const directMultipleAdds = historicalBatch ? undefined : naturalTimedBatch ??
         (durationEdit || shiftedBatch || insertInquiry || finishIntent ? undefined :
         parseMultipleNewTasks(dto.message, dto.date));
       alternativeBatch = durationEdit || shiftedBatch || insertInquiry || finishIntent || directMultipleAdds
         ? undefined
         : parseBatchAlternativeFollowUp(history, dto.message, dto.date);
       multipleAdds = directMultipleAdds ?? alternativeBatch;
-      timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry || finishIntent ? undefined :
+      timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry || finishIntent || historicalBatch ? undefined :
         (replaceRejectedAddStart(history, dto.message, dto.date) ??
           parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
@@ -812,7 +827,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         !durationEdit && !timedAdd && !shiftedBatch && !insertInquiry && !finishIntent &&
         /\d{1,2}:\d{2}/u.test(dto.message) &&
         /เพิ่ม|จัดตาราง|ลงตาราง|ฝึก|ทำกิจกรรม|เรียน|เลื่อน|ย้าย|ขยับ|เปลี่ยนเวลา/u.test(dto.message);
-      const guided = durationEdit || timedAdd || multipleAdds || shiftedBatch || insertInquiry || finishIntent || unparsedClockRequest
+      const guided = durationEdit || timedAdd || multipleAdds || historicalBatch || shiftedBatch || insertInquiry || finishIntent || unparsedClockRequest
         ? undefined : explainExtendFollowUp(snapshot, history, dto.message);
       if (finishIntent) {
         if (finishIntent.command) {
@@ -934,6 +949,59 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           };
           output = {
             reply: `อืม… ${blocked.reason} ค่ะ ยังไม่ได้เปลี่ยนตารางนะ`,
+            actions: [],
+          };
+        }
+      } else if (historicalBatch) {
+        // Trust the explicit list, not a local model that may misinterpret the
+        // count or refuse based on the selected *previous* day.
+        const prepared = planHistoricalBatch(snapshot, historicalBatch);
+        if (prepared.commands.length) {
+          const lines = prepared.booked
+            .sort((a, b) => a.start - b.start)
+            .map((task) => "• " + task.name + " " +
+              String(Math.floor(task.start / 60)).padStart(2, "0") + ":" +
+              String(task.start % 60).padStart(2, "0") + "–" +
+              String(Math.floor((task.start + task.duration) / 60)).padStart(2, "0") +
+              ":" + String((task.start + task.duration) % 60).padStart(2, "0") +
+              " (" + task.duration + " นาที)");
+          const evidence = prepared.evidence.filter((e) => e.kind !== "none");
+          const sourceLine = evidence.length
+            ? "\nยูนะเทียบกับตารางเก่าแล้ว: " +
+              evidence.map((e) => e.name + " (" +
+                (e.kind === "completed" ? "เคยทำสำเร็จ " : "เคยวางแผน ") +
+                e.matches + " ครั้ง)").join(", ")
+            : "\nงานชุดนี้ยังไม่มีประวัติกิจกรรมชื่อใกล้เคียง ยูนะใช้ช่วงเวลาว่างจริงจัดให้";
+          output = {
+            reply: (dto.autoApply
+              ? "ยูนะจัดตารางวันที่ " + historicalBatch.date +
+                " ตามที่ขอได้แล้วค่ะ จะบันทึกเฉพาะงานใหม่ที่ตรวจสอบผ่าน"
+              : "ยูนะเตรียมแผนวันที่ " + historicalBatch.date +
+                " ให้ตรวจสอบก่อนบันทึกค่ะ") +
+              "\n" + lines.join("\n") + sourceLine +
+              "\n" + prepared.notice +
+              (dto.autoApply ? "" : "\nกดยืนยันในตัวอย่างแผนได้เลยค่ะ"),
+            actions: prepared.commands,
+          };
+          // Explicit "จัดตารางทันทีเมื่อฉันสั่ง" permits committing this
+          // validated all-or-nothing batch; unchecked always previews.
+          // Never change existing work or daily capacity automatically.
+        } else {
+          blocked = {
+            reason: prepared.notice,
+            followUps: [
+              { label: "ลดงานเหลือ 4 อย่าง", prompt:
+                "พรุ่งนี้ ช่วยจัดเวลา " +
+                historicalBatch.names.slice(0, 4).join(", ") +
+                " โดยอิงแผนเก่า ถ้าเต็มขอเสนอแผนก่อนบันทึก" },
+              { label: "ตรวจเวลาว่าง", prompt:
+                "พรุ่งนี้เหลือช่วงว่างตรงไหนบ้าง แนะนำเวลาที่จัดได้โดยไม่แก้งานเดิม" },
+            ],
+          };
+          output = {
+            reply: "ยูนะตรวจแผนเก่าและช่องว่างวันที่ " +
+              historicalBatch.date + " แล้วค่ะ แต่ " + prepared.notice +
+              " ยังไม่ได้เพิ่มงานใด ๆ นะคะ",
             actions: [],
           };
         }
@@ -1516,7 +1584,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           // the prose with a receipt derived from the validated state diff.
           // This also covers LLM-arranged bookings without a user-supplied
           // exact clock, where placement is allowed but must be transparent.
-          if (changedItems.length && !requireBatchApproval &&
+          if (changedItems.length && !requireBatchApproval && !historicalBatch &&
               !editedItem && !resizedItem && !exactRequest &&
               !finishIntent?.command) {
             const fmt = (minutes: number) =>
