@@ -82,6 +82,7 @@ import {
   validDate,
 } from "./engine";
 import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "./history";
+import { recommendDay, type HabitDayPreview } from "./recommendations";
 type Proposal = {
   reasons?: string[];
   breakMinutes?: number;
@@ -90,6 +91,8 @@ type Proposal = {
   expires: number;
   sessions: Session[];
   unscheduled: string[];
+  suggestions?: HabitDayPreview["suggestions"];
+  source?: "habits";
   // Explicit approval is required to apply this one-day exception.
   capacityOverride?: { date: string; maxMinutes: number; previousLimit: number };
 };
@@ -295,6 +298,23 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       s.settings = dto;
       this.changed(s);
       return dto;
+    }, true);
+  }
+  recommendations(date: string, energy: "normal" | "low" = "normal") {
+    this.date(date);
+    return this.access((s) => recommendDay(s, date, energy));
+  }
+  recommendPreview(dto: PlanDto) {
+    this.date(dto.date);
+    return this.access((s) => {
+      const result = recommendDay(s, dto.date, dto.energy);
+      const proposal: Proposal = {
+        ...result, source: "habits", id: randomUUID(),
+        revision: s.revision, expires: Date.now() + 900000,
+      };
+      // A preview does not change the saved schedule.
+      s.proposal = proposal;
+      return proposal;
     }, true);
   }
   propose(dto: PlanDto) {
@@ -1530,6 +1550,14 @@ class PlannerController {
   }
   @Patch("settings") settings(@Body() d: SettingsDto) {
     return this.planner.settings(d);
+  }
+  @Get("recommendations") recommendations(
+    @Query("date") date: string, @Query("energy") energy?: "normal" | "low",
+  ) {
+    return this.planner.recommendations(date, energy ?? "normal");
+  }
+  @Post("recommendations/preview") recommendPreview(@Body() d: PlanDto) {
+    return this.planner.recommendPreview(d);
   }
   @Post("proposals") propose(@Body() d: PlanDto) {
     return this.planner.propose(d);
