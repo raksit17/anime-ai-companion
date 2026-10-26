@@ -928,11 +928,16 @@ test("combined edits resolve tomorrow or common typo without overriding another 
     "พรุ้งนี้ ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที");
   assert.equal(result?.command?.date, next);
   assert.equal(result?.command?.duration, 45);
-  assert.equal(
-    parseTimeDurationEdit(state, today(),
-      "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที")?.reason?.includes("ไม่พบ"),
-    true,
-  );
+  // No existing activity on the selected date: an implicit new-task
+  // request must not be treated as an edit of the next day's exercise.
+  assert.equal(parseTimeDurationEdit(state, today(),
+    "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที"), undefined);
+  assert.deepEqual(parseScheduledAdd(
+    "ออกกำลังกายช่วง 09:00 โดยใช้เวลา 45 นาที", today())?.command, {
+      type: "add", name: "ออกกำลังกาย", date: today(),
+      start: 540, duration: 45, fixed: false,
+    });
+  assert.equal(state.sessions.every((task) => task.date === next), true);
 });
 
 test("fixed collision rejects exact combined edit rather than shifting requested time", () => {
