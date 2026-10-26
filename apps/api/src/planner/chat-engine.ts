@@ -123,7 +123,9 @@ export function parseScheduledAdd(
   if (!time) return undefined;
   // No guessed event when the user is simply asking about free time.
   input = input.replace(time[0], " ");
-  const durationMatch = input.match(/(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(\d{1,3})\s*(ชั่วโมง|นาที)/u);
+  const durationMatch = input.match(
+    /(?:(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(?:ประมาณ\s*)?|(?:ประมาณ|ราว\s*ๆ?|สัก)\s*)(\d{1,3})\s*(ชั่วโมง|นาที)/u,
+  );
   if (durationMatch) input = input.replace(durationMatch[0], " ");
   input = input.trim()
     .replace(/\s*วันที่\s*$/u, "")
@@ -814,6 +816,13 @@ export function parseTimeDurationEdit(
   const matches = state.sessions.filter(
     (item) => item.date === date && normalize(item.name) === candidate,
   );
+  // "ฝึก review coding ช่วง 16:40 นาน 15 นาที" is normally a
+  // request to CREATE a session when the task does not exist yet.
+  // A missing task is an error only when the user clearly asked to
+  // move/change an EXISTING slot ("เลื่อน/ปรับ/เปลี่ยน"). Do not
+  // intercept an implicit new task before parseScheduledAdd() runs.
+  const explicitEdit = /^(?:เลื่อน|ปรับ|เปลี่ยน|ขยับ)/u.test(input);
+  if (matches.length === 0 && !explicitEdit) return undefined;
   if (matches.length !== 1)
     return {
       reason: matches.length === 0
