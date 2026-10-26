@@ -227,6 +227,27 @@ watch(
     log.value?.scrollTo({ top: log.value.scrollHeight, behavior: "smooth" });
   },
 );
+function friendlyChatError(reason: unknown) {
+  let detail = reason instanceof Error ? reason.message : String(reason);
+  // Older API builds sometimes return a nested JSON error as a string.
+  const open = detail.indexOf("{");
+  if (open !== -1) {
+    try {
+      const structured = JSON.parse(detail.slice(open));
+      if (typeof structured?.message === "string") detail = structured.message;
+      else if (typeof structured?.message?.message === "string")
+        detail = structured.message.message;
+    } catch { /* Keep the readable plain-text error. */ }
+  }
+  const message = detail.replace(/^Error:\s*/u, "").trim();
+  return "ยูนะยังจัดตารางให้ไม่ได้ค่ะ — " +
+    (/AbortError|timeout|timed out|fetch failed/iu.test(message)
+      ? "การเชื่อมต่อใช้เวลานานกว่าปกติ กรุณาลองอีกครั้งนะคะ"
+      : message && !message.startsWith("{")
+        ? message : "มีบางอย่างผิดพลาดระหว่างตรวจตาราง") +
+    " (ยังไม่ได้ยืนยันว่าตารางเปลี่ยนค่ะ)";
+}
+
 async function send(text = input.value) {
   if (busy.value || !text.trim() || !companion.character) return;
   busy.value = true;
@@ -311,7 +332,7 @@ async function send(text = input.value) {
   } catch (e) {
     error.value = replyReceived
       ? `เซิร์ฟเวอร์ตอบกลับแล้ว แต่โหลด/ตรวจสอบตารางไม่สำเร็จ: ${String(e)} โปรดรีเฟรชก่อนส่งซ้ำ`
-      : String(e);
+      : friendlyChatError(e);
     if (!replyReceived) {
       input.value = text;
       messages.value = messages.value.filter((m) => m.id !== requestId);

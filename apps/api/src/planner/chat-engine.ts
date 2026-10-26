@@ -194,6 +194,61 @@ export function completeScheduledAdd(
  * proposals only; the planner offers 30/20-minute trial allocations and the
  * user must approve the actual dates/times before anything is persisted.
  */
+
+/** A small, high-confidence natural-Thai batch parser. The first activity
+ * may carry a colloquial clock ("อ่านข่าวตอน 9 โมง"), while "อย่างละ"
+ * applies the same explicit duration to every item. Other language stays
+ * with the user's configured local model rather than guessing intent.
+ */
+export function parseNaturalThaiTimedBatch(
+  message: string,
+  selected: string,
+  now = Date.now(),
+): { date: string; names: string[]; durations: number[]; requestedStart: number } | undefined {
+  const source = message.trim();
+  if (!/(?:เพิ่ม|ช่วยจัด|จัดเวลา|อยากทำ)/u.test(source) ||
+      !/\s+และ\s+/u.test(source) ||
+      /(?:ได้ไหม|หรือเปล่า|\?)/u.test(source)) return undefined;
+  const shared = source.match(/อย่างละ\s*(\d{1,3})\s*(นาที|ชั่วโมง)\s*(?:นะ|ค่ะ|ครับ|ด้วย|หน่อย)?\s*$/u);
+  if (!shared) return undefined;
+  const duration = Number(shared[1]) * (shared[2] === "ชั่วโมง" ? 60 : 1);
+  if (duration < 5 || duration > 240) return undefined;
+  const relatives = [...source.matchAll(/วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?/gu)]
+    .map((match) => match[0].replace("พรุ้งนี้", "พรุ่งนี้"));
+  if (new Set(relatives).size > 1) return undefined;
+  const delta = relatives[0] === "วันนี้" ? 0 :
+    relatives[0] === "พรุ่งนี้" ? 1 :
+    relatives[0]?.startsWith("มะรืน") ? 2 : undefined;
+  const date = delta === undefined ? selected :
+    new Date(Date.parse(today(now)) + delta * 86400000).toISOString().slice(0, 10);
+  if (!validDate(date) || date < today(now)) return undefined;
+  const body = source.replace(/อย่างละ\s*\d{1,3}\s*(?:นาที|ชั่วโมง)\s*(?:นะ|ค่ะ|ครับ|ด้วย|หน่อย)?\s*$/u, "")
+    .replace(/^(?:(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:ช่วย\s*)?(?:เพิ่ม(?:งาน|กิจกรรม)?|ช่วยจัด(?:ตาราง|เวลา)?|จัดเวลา|อยากทำ)\s*/u, "")
+    .trim();
+  const parts = body.split(/\s+และ\s+/u).map((part) => part.trim());
+  if (parts.length < 2 || parts.length > 6) return undefined;
+  const clock = parts[0].match(/(?:ตอน|ช่วง|เวลา)\s*(?:(บ่าย|เช้า|เย็น)\s*)?(\d{1,2})\s*โมง(?:\s*(เช้า|เย็น))?\s*$/u);
+  if (!clock) return undefined;
+  let hour = Number(clock[2]);
+  const modifier = clock[1] ?? clock[3];
+  if (modifier === "บ่าย" || modifier === "เย็น") {
+    if (hour < 1 || hour > 11) return undefined;
+    hour += 12;
+  } else if (hour < 6 || hour > 11) {
+    // "3 โมง" is ambiguous between morning and afternoon.
+    return undefined;
+  }
+  const names = parts.map((part, i) => (i === 0
+    ? part.slice(0, clock.index).trim() : part)
+    .replace(/^(?:งาน|กิจกรรม)\s*/u, "")
+    .replace(/\s+/gu, " ").trim());
+  if (names.some((name) => !name || name.length > 120 || !/[\p{L}]/u.test(name)))
+    return undefined;
+  if (new Set(names.map((name) => name.toLocaleLowerCase())).size !== names.length)
+    return undefined;
+  return { date, names, durations: names.map(() => duration), requestedStart: hour * 60 };
+}
+
 export function parseMultipleNewTasks(
   message: string,
   selected: string,
