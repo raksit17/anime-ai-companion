@@ -124,7 +124,7 @@ export function parseScheduledAdd(
   // No guessed event when the user is simply asking about free time.
   input = input.replace(time[0], " ");
   const durationMatch = input.match(
-    /(?:(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(?:ประมาณ\s*)?|(?:ประมาณ|ราว\s*ๆ?|สัก)\s*)(\d{1,3})\s*(ชั่วโมง|นาที)/u,
+    /(?:(?:โดย\s*)?(?:ระยะเวลา|ใช้เวลา|นาน|เป็นเวลา|อีก)\s*(?:ประมาณ\s*)?|(?:ประมาณ|ราว\s*ๆ?|สัก)\s*)(\d{1,3})\s*(ชั่วโมง|นาที)/u,
   );
   if (durationMatch) input = input.replace(durationMatch[0], " ");
   input = input.trim()
