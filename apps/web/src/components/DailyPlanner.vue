@@ -239,7 +239,7 @@ function friendlyChatError(reason: unknown) {
         detail = structured.message.message;
     } catch { /* Keep the readable plain-text error. */ }
   }
-  const message = detail.replace(/^Error:\\s*/u, "").trim();
+  const message = detail.replace(/^Error:\s*/u, "").trim();
   return "ยูนะยังจัดตารางให้ไม่ได้ค่ะ — " +
     (/AbortError|timeout|timed out|fetch failed/iu.test(message)
       ? "การเชื่อมต่อใช้เวลานานกว่าปกติ กรุณาลองอีกครั้งนะคะ"
