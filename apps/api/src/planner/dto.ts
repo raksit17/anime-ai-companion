@@ -55,6 +55,12 @@ export class SwapSessionsDto {
   @IsInt() @Min(0) expectedRevision!: number;
 }
 
+/** Rename only this calendar occurrence, not its recurring goal. */
+export class RenameSessionDto {
+  @IsString() @MaxLength(120) @Matches(/\S/u) name!: string;
+  @IsInt() @Min(0) expectedRevision!: number;
+}
+
 export class EditSessionTimeDto {
   @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/) date!: string;
   @IsInt() @Min(0) @Max(1439) start!: number;

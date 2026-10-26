@@ -83,7 +83,10 @@ const date = ref(today()),
   editingSessionId = ref(""),
   editStart = ref(""),
   editDuration = ref(30),
-  editError = ref("");
+  editError = ref(""),
+  renamingSessionId = ref(""),
+  editName = ref(""),
+  editNameError = ref("");
 type HabitSuggestion = {
   activityKey: string; name: string; suggestedMinutes: number;
   preferredStart: number; evidenceCount: number; reason: string;
@@ -209,6 +212,7 @@ const label = (s: string) =>
   ] ?? s;
 function select(d: string) {
   editingSessionId.value = "";
+  cancelNameEditor();
   editError.value = "";
   highlightedSession.value = "";
   dragSourceId.value = "";
@@ -386,6 +390,62 @@ function canReorder(session: Session) {
     Date.parse(`${session.date}T00:00:00+07:00`) +
       session.start * 60000 > now.value;
 }
+
+function cancelNameEditor() {
+  renamingSessionId.value = "";
+  editName.value = "";
+  editNameError.value = "";
+}
+function openNameEditor(session: Session) {
+  if (busy.value) return;
+  if (renamingSessionId.value === session.id) {
+    cancelNameEditor();
+    return;
+  }
+  editingSessionId.value = "";
+  editError.value = "";
+  renamingSessionId.value = session.id;
+  editName.value = session.name;
+  editNameError.value = "";
+  reorderMessage.value = "";
+  void nextTick(() => document.getElementById("planner-name-input-" + session.id)?.focus());
+}
+async function saveNameEdit(session: Session) {
+  if (busy.value || renamingSessionId.value !== session.id) return;
+  const name = editName.value.trim();
+  if (!name || name.length > 120) {
+    editNameError.value = "กรุณาใส่ชื่อกิจกรรม 1–120 ตัวอักษร";
+    return;
+  }
+  if (name === session.name) {
+    cancelNameEditor();
+    return;
+  }
+  busy.value = true;
+  editNameError.value = "";
+  error.value = "";
+  reorderMessage.value = "";
+  try {
+    const result = await api<{ changed: boolean; session: Session }>(
+      "/planner/sessions/" + encodeURIComponent(session.id) + "/name",
+      "PATCH", { name, expectedRevision: scheduleRevision.value },
+    );
+    proposal.value = undefined;
+    await refresh();
+    cancelNameEditor();
+    highlightedSession.value = session.id;
+    reorderMessage.value = result.changed
+      ? "แก้ชื่อกิจกรรมเป็น “" + result.session.name + "” แล้ว"
+      : "ชื่อกิจกรรมยังเหมือนเดิม";
+  } catch (e) {
+    editNameError.value = friendlyChatError(e)
+      .replace(/^ยูนะยังจัดตารางให้ไม่ได้ค่ะ — /u, "")
+      .replace(/ \(ยังไม่ได้ยืนยันว่าตารางเปลี่ยนค่ะ\)$/u, "");
+    try { await refresh(); } catch { /* Surface the original error. */ }
+  } finally {
+    busy.value = false;
+  }
+}
 // A missed task can remain planned after its scheduled start; allow
 // moving it forward via the inline editor without changing its history.
 function canEditTime(session: Session) {
@@ -399,6 +459,7 @@ function openTimeEditor(session: Session) {
     editError.value = "";
     return;
   }
+  cancelNameEditor();
   editingSessionId.value = session.id;
   editStart.value = clock(session.start);
   editDuration.value = session.duration;
@@ -928,8 +989,48 @@ watch(advanced, (value) => {
             </div>
             <div class="task">
               <div class="task-title">
-                <div class="task-name"><strong>{{ s.name }}</strong></div>
+                <div class="task-name">
+                  <strong v-if="renamingSessionId !== s.id">{{ s.name }}</strong>
+                  <form
+                    v-else
+                    :id="'planner-edit-name-' + s.id"
+                    class="inline-name-edit"
+                    @submit.prevent="saveNameEdit(s)"
+                    @keydown.esc.stop.prevent="cancelNameEditor"
+                  >
+                    <label :for="'planner-name-input-' + s.id">ชื่อหัวข้อกิจกรรม</label>
+                    <input
+                      :id="'planner-name-input-' + s.id"
+                      v-model="editName"
+                      type="text"
+                      maxlength="120"
+                      required
+                      :disabled="busy"
+                      autocomplete="off"
+                    />
+                    <p v-if="editNameError" class="time-edit-error" role="alert">
+                      {{ editNameError }}
+                    </p>
+                    <div class="edit-time-buttons">
+                      <button type="submit" :disabled="busy || !editName.trim()">
+                        บันทึกชื่อ
+                      </button>
+                      <button type="button" :disabled="busy" @click="cancelNameEditor">
+                        ยกเลิก
+                      </button>
+                    </div>
+                  </form>
+                </div>
                 <div class="task-heading-tools">
+                  <button
+                    class="edit-time-trigger rename-trigger"
+                    type="button"
+                    :disabled="busy"
+                    :aria-expanded="renamingSessionId === s.id"
+                    :aria-controls="'planner-edit-name-' + s.id"
+                    :aria-label="'แก้ชื่อหัวข้อ ' + s.name"
+                    @click="openNameEditor(s)"
+                  >{{ renamingSessionId === s.id ? "ปิดชื่อ" : "✎ แก้ชื่อ" }}</button>
                   <template v-if="canReorder(s)">
                     <button
                       class="reorder-handle"
@@ -1464,6 +1565,30 @@ watch(advanced, (value) => {
   font-size: 11px;
   white-space: nowrap;
 }
+.inline-name-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2px 0 8px;
+  max-width: 430px;
+}
+.inline-name-edit label {
+  color: #53664d;
+  font-size: 11px;
+}
+.inline-name-edit input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 35px;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid #cfdaca;
+  background: #fff;
+  color: #253a2c;
+}
+.inline-name-edit .edit-time-buttons button { min-height: 30px; }
+.rename-trigger { background: #f2f7ef; }
 .inline-time-edit {
   display: flex;
   flex-direction: column;
