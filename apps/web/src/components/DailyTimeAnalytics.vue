@@ -216,6 +216,9 @@ const freeWindows = computed(() =>
       </div>
 
       <div class="usage-footer">
+        <span v-if="date === new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10)">
+          ว่างที่ยังเหลือจากตอนนี้ {{ formatted(data.futureFreeMinutes) }}
+        </span>
         <span>งานเสร็จตามเวลาจอง {{ formatted(data.completedBookedMinutes) }}</span>
         <span>งานที่ยังวางแผน {{ formatted(data.plannedBookedMinutes) }}</span>
         <span v-if="data.actualSampleCount">
