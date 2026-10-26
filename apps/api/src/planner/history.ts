@@ -68,8 +68,13 @@ export function computeHabitProfile(
   days = 90,
   now = Date.now(),
 ) {
-  const durationDays = Math.max(7, Math.min(365, Math.floor(days) || 90));
-  const latest = today(now);
+  // 4-day trial reads the four complete days before today; long-term windows
+  // keep their original inclusive-today behavior for backward compatibility.
+  const trial = days === 4;
+  const durationDays = trial ? 4 : Math.max(7, Math.min(365, Math.floor(days) || 90));
+  const latest = trial
+    ? new Date(Date.parse(today(now)) - 86400000).toISOString().slice(0, 10)
+    : today(now);
   const start = new Date(Date.parse(latest) - (durationDays - 1) * 86400000)
     .toISOString().slice(0, 10);
   const byId = new Map(sessions.map((s) => [s.id, s]));
@@ -89,7 +94,7 @@ export function computeHabitProfile(
   ].filter(({ session }) => session.date >= start && session.date <= latest);
   const clusters = new Map<string, {
     activityKey: string; category: ActivityCategory; name: string;
-    total: number; done: number; skipped: number; missed: number;
+    total: number; done: number; flexibleDone: number; skipped: number; missed: number;
     pending: number; cancelled: number; scheduledMinutes: number;
     observedActualMinutes: number; actualSamples: number;
     starts: number[]; doneDates: string[]; weekdays: Record<number, number>;
@@ -102,7 +107,7 @@ export function computeHabitProfile(
     };
     let group = clusters.get(identity.activityKey);
     if (!group) {
-      group = { ...identity, name: s.name, total: 0, done: 0,
+      group = { ...identity, name: s.name, total: 0, done: 0, flexibleDone: 0,
         skipped: 0, missed: 0, pending: 0, cancelled: 0,
         scheduledMinutes: 0, observedActualMinutes: 0, actualSamples: 0,
         starts: [], doneDates: [], weekdays: {} };
@@ -113,6 +118,7 @@ export function computeHabitProfile(
     if (cancelled) group.cancelled++;
     else if (s.status === "done") {
       group.done++;
+      if (!s.fixed) group.flexibleDone++;
       group.starts.push(s.start);
       group.doneDates.push(s.date);
       const bucket = Math.floor(s.start / 30) * 30;
@@ -152,8 +158,9 @@ export function computeHabitProfile(
       .reduce((n, s) => n + s.done, 0),
   }));
   const recommendations = activities.filter((a) =>
-    a.recurringPattern && a.completionRate !== null &&
-    a.completionRate >= 0.5 && a.preferredStart !== null)
+    a.preferredStart !== null && (trial
+      ? a.flexibleDone > 0
+      : a.recurringPattern && a.completionRate !== null && a.completionRate >= 0.5))
     .slice(0, 5)
     .map((a) => ({
       activityKey: a.activityKey, name: a.name,
@@ -162,8 +169,11 @@ export function computeHabitProfile(
         Math.round((a.scheduledMinutes / a.total) / 5) * 5)),
       preferredStart: Math.round(a.preferredStart! / 15) * 15,
       preferredWeekday: a.preferredWeekday,
-      reason: "พบการทำสำเร็จ " + a.done +
-        " ครั้งใน " + durationDays + " วัน (เป็นข้อเสนอ ไม่ใช่กำหนดการอัตโนมัติ)",
+      reason: trial
+        ? "ทดลองจากงานที่ทำสำเร็จ " + a.done +
+          " ครั้งในช่วง 4 วันก่อนหน้า (ข้อมูลน้อย ยังไม่ใช่นิสัยประจำ)"
+        : "พบการทำสำเร็จ " + a.done +
+          " ครั้งใน " + durationDays + " วัน (เป็นข้อเสนอ ไม่ใช่กำหนดการอัตโนมัติ)",
     }));
   const timeClusters = [...timeBuckets].sort((a, b) => b[1] - a[1])
     .map(([start, count]) => ({ start, count }));
@@ -179,7 +189,8 @@ export function computeHabitProfile(
     missingActualStarts: rows.filter(({ session, cancelled }) =>
       !cancelled && session.status === "done" && !session.actualStartedAt).length,
     activities, categories, timeClusters, eventKinds, recommendations,
-    note: "สถิติอ้างอิงประวัติกิจกรรมที่บันทึกจริง ไม่ใช้แชตเดาผล งานเสร็จที่ไม่กดเริ่มจะไม่มีระยะเวลาทำจริง",
+    note: (trial ? "โหมดทดลอง 4 วัน: ผลนี้ยังไม่ใช่กิจวัตรที่ยืนยันได้ " : "") +
+      "สถิติอ้างอิงประวัติกิจกรรมที่บันทึกจริง ไม่ใช้แชตเดาผล งานเสร็จที่ไม่กดเริ่มจะไม่มีระยะเวลาทำจริง",
   };
 }
 
