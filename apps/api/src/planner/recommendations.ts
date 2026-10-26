@@ -12,7 +12,7 @@ export type HabitSuggestion = {
   evidenceCount: number;
   preferredStart: number;
   plannedStart: number;
-  confidence: "high" | "medium";
+  confidence: "high" | "medium" | "low";
   reason: string;
 };
 
@@ -24,6 +24,10 @@ export type HabitDayPreview = {
   reasons: string[];
   unscheduled: string[];
   breakMinutes: number;
+  lookbackDays: number;
+  analysisFrom: string;
+  analysisTo: string;
+  mode: "recent-trial" | "habit";
 };
 
 const weekday = (date: string) => new Date(date + "T12:00:00Z").getUTCDay();
@@ -54,8 +58,14 @@ export function recommendDay(
     throw new Error("แนะนำได้เฉพาะวันนี้หรือวันภายในหนึ่งปีข้างหน้า");
   if (energy !== "normal" && energy !== "low")
     throw new Error("ระดับพลังงานไม่ถูกต้อง");
-  const durationDays = Math.max(7, Math.min(365, Math.floor(days) || 90));
-  const start = new Date(Date.parse(today(now)) - (durationDays - 1) * 86400000)
+  // Trial uses exactly four COMPLETE previous calendar days, not today's
+  // partially executed schedule. On Oct 26 this means Oct 22–25.
+  const recentTrial = days === 4;
+  const durationDays = recentTrial ? 4 : Math.max(7, Math.min(365, Math.floor(days) || 90));
+  const analysisTo = recentTrial
+    ? new Date(Date.parse(today(now)) - 86400000).toISOString().slice(0, 10)
+    : today(now);
+  const start = new Date(Date.parse(analysisTo) - (durationDays - 1) * 86400000)
     .toISOString().slice(0, 10);
   const work: State = structuredClone(input);
   work.settings.breakMinutes = Math.max(15, work.settings.breakMinutes);
@@ -63,33 +73,35 @@ export function recommendDay(
   for (const session of input.sessions) {
     // Planned, skipped, deferred and future sessions are not completion evidence.
     if (session.status !== "done" || session.date < start ||
-        session.date >= date || session.date > today(now)) continue;
+        session.date >= date || session.date > analysisTo) continue;
     const key = session.activityKey ?? activityKeyFor(session.name);
     groups.set(key, [...(groups.get(key) ?? []), session]);
   }
   type Candidate = {
     key: string; name: string; category: string; preferred: number;
-    duration: number; evidence: number; confidence: "high" | "medium";
+    duration: number; evidence: number; confidence: "high" | "medium" | "low";
     score: number; goalId?: string; fixed: boolean; reminder: number;
     reason: string;
   };
   const candidates: Candidate[] = [];
   const day = weekday(date);
   for (const [key, records] of groups) {
-    if (new Set(records.map((s) => s.date)).size < 3) continue;
+    if (!recentTrial && new Set(records.map((s) => s.date)).size < 3) continue;
+    // Do not convert one-off fixed appointments into recurring suggestions.
+    if (recentTrial && records.every((s) => s.fixed)) continue;
     const exact = records.filter((s) => weekday(s.date) === day);
     const sameType = records.filter((s) => isWorkday(s.date) === isWorkday(date));
-    const evidence = exact.length >= 2 ? exact : sameType;
-    if (evidence.length < 3 && !(exact.length >= 2 &&
+    // A trial may use just one verified completion, never label it a habit.
+    const evidence = recentTrial ? records : (exact.length >= 2 ? exact : sameType);
+    if (!recentTrial && evidence.length < 3 && !(exact.length >= 2 &&
         new Set(exact.map((s) => s.date)).size >= 2)) continue;
-    // Repetition within only one week is not yet a routine.
     const weeks = new Set(evidence.map((s) =>
       Math.floor(Date.parse(s.date) / 604800000)));
-    if (weeks.size < 2) continue;
+    if (!recentTrial && weeks.size < 2) continue;
     const preferred = Math.round(median(evidence.map((s) => s.start)) / 15) * 15;
     const consistent = evidence.filter((s) =>
       Math.abs(s.start - preferred) <= 60).length;
-    if (consistent < Math.max(2, Math.ceil(evidence.length * 0.6))) continue;
+    if (!recentTrial && consistent < Math.max(2, Math.ceil(evidence.length * 0.6))) continue;
     const sample = evidence.find((s) => !!s.name)!;
     const goal = input.goals.find((g) => activityKeyFor(g.name) === key);
     if (goal && (!goal.days.includes(day) ||
@@ -111,18 +123,24 @@ export function recommendDay(
     const duration = Math.max(10, Math.min(energy === "low" ? 20 : 120,
       Math.round((goal?.duration ?? typicalDuration) / 5) * 5));
     const high = exact.length >= 3 && weeks.size >= 3;
+    const recentSample = [...evidence].sort((a, b) => b.date.localeCompare(a.date))[0];
     candidates.push({
-      key, name: goal?.name ?? sample.name,
+      key, name: goal?.name ?? (recentTrial ? recentSample.name : sample.name),
       category: sample.category ?? classifyActivity(sample.name),
-      preferred: goal?.preferred ?? preferred, duration,
-      evidence: evidence.length, confidence: high ? "high" : "medium",
-      score: (exact.length >= 2 ? 100 : 0) + evidence.length * 10 +
-        (goal?.priority ?? 1),
+      preferred: recentTrial ? preferred : (goal?.preferred ?? preferred), duration,
+      evidence: evidence.length, confidence: recentTrial ? "low" : (high ? "high" : "medium"),
+      score: (recentTrial ? 0 : (exact.length >= 2 ? 100 : 0)) +
+        new Set(evidence.map((s) => s.date)).size * 20 +
+        evidence.length * 10 + (goal?.priority ?? 1),
       goalId: goal?.id, fixed: goal ? !goal.flexible : false,
       reminder: goal?.reminder ?? 10,
-      reason: (exact.length >= 2 ? "เคยทำสำเร็จในวันเดียวกัน" :
-        "เคยทำสำเร็จในช่วงวันประเภทเดียวกัน") +
-        " " + evidence.length + " ครั้ง ใกล้เวลา " + clock(preferred),
+      reason: recentTrial
+        ? "โหมดทดลอง: เคยทำสำเร็จ " + evidence.length +
+          " ครั้งใน " + durationDays + " วันก่อนหน้า ใกล้เวลา " +
+          clock(preferred) + " (ยังไม่ยืนยันว่าเป็นกิจวัตร)"
+        : (exact.length >= 2 ? "เคยทำสำเร็จในวันเดียวกัน" :
+          "เคยทำสำเร็จในช่วงวันประเภทเดียวกัน") +
+          " " + evidence.length + " ครั้ง ใกล้เวลา " + clock(preferred),
     });
   }
   candidates.sort((a, b) => b.score - a.score || a.preferred - b.preferred);
@@ -151,9 +169,17 @@ export function recommendDay(
     const offsets = candidate.fixed ? [0] :
       [0, ...Array.from({ length: 8 }, (_, i) => (i + 1) * 15)
         .flatMap((offset) => [offset, -offset])];
-    const slot = offsets.map((offset) => candidate.preferred + offset)
+    let slot = offsets.map((offset) => candidate.preferred + offset)
       .find((start) => start >= 0 && start <= 1439 &&
         fits(work, { ...base, start }, now));
+    // Today may already be past the usual morning slot. In trial mode only,
+    // offer a clearly labeled later free slot rather than a stale clock.
+    if (slot === undefined && recentTrial && !candidate.fixed) {
+      const validStarts = Array.from({ length: 96 }, (_, i) => i * 15)
+        .filter((start) => fits(work, { ...base, start }, now));
+      slot = validStarts.sort((a, b) =>
+        Math.abs(a - candidate.preferred) - Math.abs(b - candidate.preferred) || a - b)[0];
+    }
     if (slot === undefined) {
       unscheduled.push(candidate.name +
         ": ไม่มีช่วงว่างใกล้เวลาเดิม โดยไม่ชนกิจกรรมหรือเวลาพัก");
@@ -173,9 +199,13 @@ export function recommendDay(
     reasons.push(candidate.name + ": " + suggestions[suggestions.length - 1].reason);
   }
   if (!candidates.length)
-    unscheduled.push("ข้อมูลทำสำเร็จในหลายสัปดาห์ยังไม่พอสำหรับสร้างแผนจากนิสัย");
+    unscheduled.push(recentTrial
+      ? "ยังไม่มีงานที่บันทึกว่าสำเร็จใน 4 วันที่ผ่านมา หรือมีแต่การนัดที่ล็อกเวลา"
+      : "ข้อมูลทำสำเร็จในหลายสัปดาห์ยังไม่พอสำหรับสร้างแผนจากนิสัย");
   if (candidates.length && !suggestions.length && !unscheduled.length)
     unscheduled.push("ไม่พบช่วงเวลาที่ตรงกับข้อจำกัดตารางวันนี้");
   return { date, energy, sessions: work.sessions, suggestions, reasons,
-    unscheduled, breakMinutes: work.settings.breakMinutes };
+    unscheduled, breakMinutes: work.settings.breakMinutes,
+    lookbackDays: durationDays, analysisFrom: start, analysisTo,
+    mode: recentTrial ? "recent-trial" : "habit" };
 }
