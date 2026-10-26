@@ -59,6 +59,7 @@ import {
   GoalDto,
   MoveDto,
   PlanDto,
+  RecommendationDto,
   ProgressDto,
   SettingsDto,
   SwapSessionsDto,
@@ -212,7 +213,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
   }
   async habits(days = 90) {
     const durationDays = Number.isFinite(days)
-      ? Math.max(7, Math.min(365, Math.floor(days))) : 90;
+      ? days === 4 ? 4 : Math.max(7, Math.min(365, Math.floor(days))) : 90;
     const [state, events] = await Promise.all([
       this.access((s) => s),
       this.db.plannerActivityEvent?.findMany({
@@ -300,14 +301,14 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       return dto;
     }, true);
   }
-  recommendations(date: string, energy: "normal" | "low" = "normal") {
+  recommendations(date: string, energy: "normal" | "low" = "normal", days = 90) {
     this.date(date);
-    return this.access((s) => recommendDay(s, date, energy));
+    return this.access((s) => recommendDay(s, date, energy, Date.now(), days));
   }
-  recommendPreview(dto: PlanDto) {
+  recommendPreview(dto: RecommendationDto) {
     this.date(dto.date);
     return this.access((s) => {
-      const result = recommendDay(s, dto.date, dto.energy);
+      const result = recommendDay(s, dto.date, dto.energy, Date.now(), dto.days ?? 90);
       const proposal: Proposal = {
         ...result, source: "habits", id: randomUUID(),
         revision: s.revision, expires: Date.now() + 900000,
@@ -1553,10 +1554,12 @@ class PlannerController {
   }
   @Get("recommendations") recommendations(
     @Query("date") date: string, @Query("energy") energy?: "normal" | "low",
+    @Query("days") days?: string,
   ) {
-    return this.planner.recommendations(date, energy ?? "normal");
+    return this.planner.recommendations(date, energy ?? "normal",
+      days === undefined ? 90 : Number(days));
   }
-  @Post("recommendations/preview") recommendPreview(@Body() d: PlanDto) {
+  @Post("recommendations/preview") recommendPreview(@Body() d: RecommendationDto) {
     return this.planner.recommendPreview(d);
   }
   @Post("proposals") propose(@Body() d: PlanDto) {
