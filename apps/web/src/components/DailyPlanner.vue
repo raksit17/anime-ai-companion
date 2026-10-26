@@ -11,6 +11,7 @@ import { api } from "../api";
 import { generateRequestId } from "../services/request-id";
 import { useChat } from "../stores/chat";
 import PlannerAdvanced from "./PlannerAdvanced.vue";
+import DailyTimeAnalytics from "./DailyTimeAnalytics.vue";
 type Session = {
   id: string;
   name: string;
@@ -820,6 +821,7 @@ watch(advanced, (value) => {
             </button>
           </div>
         </details>
+        <DailyTimeAnalytics :date="date" :revision="scheduleRevision" />
         <div class="day-stats">
           <span
             ><strong>{{ done }}/{{ daySessions.length }}</strong> สำเร็จ</span
