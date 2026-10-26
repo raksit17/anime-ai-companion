@@ -3167,3 +3167,62 @@ test("inline editor explains 21:40–22:10 bedtime violation and offers an allow
   assert.throws(() => editDaySessionTime(state, "toeic", day, 1260, 20),
     /ฝึกภาษาอังกฤษจาก YouTube|พักไม่ครบ/);
 });
+
+
+test("Yuna auto-books all seven screenshot activities for tomorrow when user enabled autoApply", async () => {
+  const { p, ai, calls } = fixture();
+  ai.plannerCompletion = async () => { throw new Error("deterministic seven-task request must not rely on Ollama"); };
+  const tomorrow = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const request = {
+    ...dto, requestId: "yuna-seven-screenshot", date: tomorrow,
+    message: "พรุ่งนี้จัดเวลาที่ ทำความสะอาด,ออกกำลังกาย,หางาน,ฝึกสัมภาษณ์ ชาวต่างชาติ อ่านข่าว bbc,ติว toeic,ฝึกฟังอังกฤษ youtube streamer .เพิ่มสำหรับพรุ่งนี้",
+    autoApply: true,
+  };
+  const response = await p.chat(request);
+  const state = await p.get();
+  assert.equal(response.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(response.message.appliedChanges?.length, 7);
+  assert.equal(state.sessions.length, 7);
+  assert.ok(state.sessions.every((s: any) => s.date === tomorrow));
+  assert.ok(state.sessions.reduce((n: number, s: any) => n + s.duration, 0) <= state.settings.maxMinutes);
+  assert.match(response.message.content, /ตารางเก่า/);
+  assert.match(response.message.content, /ฝึกฟังอังกฤษ youtube streamer/);
+  const again = await p.chat(request);
+  assert.equal(again.message.id, response.message.id);
+  assert.equal((await p.get()).sessions.length, 7);
+});
+
+test("Yuna seven-task request previews instead of saving with autoApply disabled", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => { throw new Error("must not need model for clear list"); };
+  const tomorrow = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const request = {
+    ...dto, requestId: "yuna-seven-preview", date: tomorrow,
+    message: "พรุ่งนี้จัดเวลาที่ ทำความสะอาด,ออกกำลังกาย,หางาน,ฝึกสัมภาษณ์ ชาวต่างชาติ อ่านข่าว bbc,ติว toeic,ฝึกฟังอังกฤษ youtube streamer .เพิ่มสำหรับพรุ่งนี้",
+    autoApply: false,
+  };
+  const response = await p.chat(request);
+  assert.match(response.message.outcome, /รอยืนยัน/);
+  assert.equal((await p.get()).sessions.length, 0);
+  assert.ok(response.proposal);
+  assert.match(response.message.content, /ยืนยัน/);
+  await p.confirm(response.proposal.id);
+  assert.equal((await p.get()).sessions.length, 7);
+});
+
+test("Yuna refuses overflowing seven-item batch atomically without an inflated capacity", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 60;
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => { throw new Error("must not call AI for valid list"); };
+  const tomorrow = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const response = await p.chat({
+    ...dto, requestId: "yuna-seven-overflow", date: tomorrow,
+    message: "พรุ่งนี้จัดเวลาที่ ทำความสะอาด,ออกกำลังกาย,หางาน,ฝึกสัมภาษณ์ ชาวต่างชาติ อ่านข่าว bbc,ติว toeic,ฝึกฟังอังกฤษ youtube streamer .เพิ่มสำหรับพรุ่งนี้",
+    autoApply: true,
+  });
+  assert.match(response.message.outcome, /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal((await p.get()).sessions.length, 0);
+  assert.equal((await p.get()).settings.maxMinutes, 60);
+  assert.ok(response.message.followUps?.length);
+});
