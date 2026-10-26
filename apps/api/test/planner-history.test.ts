@@ -117,3 +117,20 @@ test("weekly review includes chat-created one-offs and appointments lacking goal
   assert.equal(review.goals.length, 2);
   assert.equal(review.goals.find((g) => g.name === "อ่านข่าว BBC")?.total, 2);
 });
+
+test("4-day analytics covers Oct 22–25 and exposes one-off completed ideas without calling them habits", () => {
+  const rows = [
+    sample({ id: "too-old", date: "2026-10-21", status: "done" }),
+    sample({ id: "shown", date: "2026-10-24", name: "เรียน TOEIC", status: "done" }),
+    sample({ id: "future", date: "2026-10-26", name: "Coding", status: "planned" }),
+  ];
+  const result = computeHabitProfile(rows, [], 4, now);
+  assert.equal(result.from, "2026-10-22");
+  assert.equal(result.to, "2026-10-25");
+  assert.equal(result.activityCount, 1);
+  assert.equal(result.completed, 1);
+  assert.equal(result.activities[0].recurringPattern, false);
+  assert.equal(result.recommendations.length, 1);
+  assert.match(result.recommendations[0].reason, /ข้อมูลน้อย/);
+  assert.match(result.note, /โหมดทดลอง 4 วัน/);
+});
