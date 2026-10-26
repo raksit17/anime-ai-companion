@@ -50,6 +50,15 @@ type Proposal = {
   id: string;
   sessions: Session[];
   unscheduled: string[];
+  source?: "habits";
+  mode?: "recent-trial" | "habit";
+  analysisFrom?: string;
+  analysisTo?: string;
+  suggestions?: Array<{
+    sessionId: string; name: string; reason: string;
+    evidenceCount: number; confidence: "low" | "medium" | "high";
+    plannedStart: number;
+  }>;
   capacityOverride?: {
     date: string;
     previousLimit: number;
@@ -79,6 +88,7 @@ type HabitSuggestion = {
   preferredStart: number; evidenceCount: number; reason: string;
 };
 const habitSuggestions = ref<HabitSuggestion[]>([]),
+  habitDays = ref<4 | 90>(4), historyFrom = ref(""), historyTo = ref(""),
   habitTip = ref(""), habitLoading = ref(false), showHabitSuggestions = ref(false);
 const input = ref(""),
   error = ref(""),
@@ -525,26 +535,54 @@ async function removeSession(session: Session) {
     busy.value = false;
   }
 }
-async function showHistoryRecommendations() {
+async function loadHistoryRecommendations(days: 4 | 90) {
   if (habitLoading.value) return;
-  showHabitSuggestions.value = !showHabitSuggestions.value;
-  if (!showHabitSuggestions.value) return;
   habitLoading.value = true;
+  habitDays.value = days;
   habitTip.value = "";
+  habitSuggestions.value = [];
   try {
     const result = await api<{
       recommendations: HabitSuggestion[];
       activityCount: number;
-    }>("/planner/habits?days=90");
+      from: string;
+      to: string;
+    }>("/planner/habits?days=" + days);
     habitSuggestions.value = result.recommendations;
+    historyFrom.value = result.from;
+    historyTo.value = result.to;
     if (!result.recommendations.length)
       habitTip.value = result.activityCount
-        ? "ยังมีข้อมูลทำสำเร็จซ้ำไม่พอ ยูนะจะยังไม่เดาว่านี่เป็นนิสัยประจำ"
-        : "ยังไม่มีประวัติกิจกรรมจริงให้วิเคราะห์ค่ะ";
+        ? days === 4
+          ? "ใน 4 วันก่อนหน้ายังไม่มีงานยืดหยุ่นที่ทำสำเร็จให้ทดลองจัดใหม่"
+          : "ยังมีข้อมูลทำสำเร็จซ้ำหลายสัปดาห์ไม่พอสำหรับสรุปนิสัยประจำ"
+        : "ยังไม่มีประวัติกิจกรรมจริงในช่วงวันที่เลือกค่ะ";
   } catch (e) {
     habitTip.value = String(e);
   } finally {
     habitLoading.value = false;
+  }
+}
+async function showHistoryRecommendations() {
+  if (habitLoading.value) return;
+  showHabitSuggestions.value = !showHabitSuggestions.value;
+  if (showHabitSuggestions.value)
+    await loadHistoryRecommendations(habitDays.value);
+}
+async function previewRecentPlan(target: string) {
+  if (busy.value || habitLoading.value) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    proposal.value = await api<Proposal>("/planner/recommendations/preview", "POST", {
+      date: target, energy: "normal", days: habitDays.value,
+    });
+    date.value = target;
+    month.value = target.slice(0, 7);
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    busy.value = false;
   }
 }
 function prepareHabitSuggestion(suggestion: HabitSuggestion) {
@@ -648,7 +686,7 @@ watch(advanced, (value) => {
       <div class="planner-header-actions">
         <button class="quiet" @click="showHistoryRecommendations"
           :disabled="habitLoading">
-          {{ showHabitSuggestions ? "ซ่อนคำแนะนำ" : "แนะนำแผนตามประวัติ" }}
+          {{ showHabitSuggestions ? "ซ่อนคำแนะนำ" : "ทดลองแผนจากประวัติ" }}
         </button>
         <button class="quiet" @click="advanced = !advanced">
           {{ advanced ? "กลับตารางวันนี้" : "ตั้งค่าเพิ่มเติม" }}
@@ -656,7 +694,27 @@ watch(advanced, (value) => {
       </div>
     </header>
     <section v-if="showHabitSuggestions" class="habit-suggestions" aria-label="แนะนำจากประวัติจริง">
-      <strong>ไอเดียจากกิจกรรมที่ผ่านมา (90 วัน)</strong>
+      <strong>ไอเดียจากกิจกรรมที่ผ่านมา ({{ habitDays }} วัน{{ habitDays === 4 ? " · ทดลอง" : "" }})</strong>
+      <div class="habit-quick-actions">
+        <button type="button" :disabled="habitLoading || busy"
+          @click="loadHistoryRecommendations(4)">ลอง 4 วันก่อนหน้า</button>
+        <button type="button" :disabled="habitLoading || busy"
+          @click="loadHistoryRecommendations(90)">วิเคราะห์ 90 วัน</button>
+      </div>
+      <p v-if="historyFrom && historyTo" class="muted">
+        ข้อมูลวันที่ {{ historyFrom }} ถึง {{ historyTo }}
+        <template v-if="habitDays === 4">
+          · ใช้เป็นตัวอย่างจากงานที่ทำสำเร็จ ไม่ถือเป็นนิสัยประจำ
+        </template>
+      </p>
+      <div class="habit-quick-actions">
+        <button type="button" :disabled="busy || habitLoading" @click="previewRecentPlan(today())">
+          เสนอแผนวันนี้
+        </button>
+        <button type="button" :disabled="busy || habitLoading" @click="previewRecentPlan(shift(today(), 1))">
+          เสนอแผนพรุ่งนี้
+        </button>
+      </div>
       <p v-if="habitLoading">กำลังตรวจประวัติกิจกรรมจริง…</p>
       <p v-if="habitTip">{{ habitTip }}</p>
       <div v-for="suggestion in habitSuggestions" :key="suggestion.activityKey"
@@ -669,6 +727,22 @@ watch(advanced, (value) => {
         <button type="button" @click="prepareHabitSuggestion(suggestion)">
           ใส่ในช่องคุย (ยังไม่บันทึก)
         </button>
+      </div>
+      <div v-if="proposal?.source === 'habits'" class="habit-trial-preview">
+        <strong>ตัวอย่างตารางวันที่ {{ date }} · ยังไม่บันทึก</strong>
+        <p v-if="proposal.mode === 'recent-trial'" class="muted">
+          ทดลองจากข้อมูลน้อย ไม่ใช่การยืนยันว่าช่วงเวลานี้เป็นนิสัยประจำ
+        </p>
+        <div v-for="item in proposal.suggestions" :key="item.sessionId" class="habit-suggestion-item">
+          <div>
+            <strong>{{ clock(item.plannedStart) }} · {{ item.name }}</strong>
+            <p>{{ item.reason }}</p>
+          </div>
+        </div>
+        <p v-for="note in proposal.unscheduled" :key="note">{{ note }}</p>
+        <button type="button" :disabled="busy || !(proposal.suggestions?.length)"
+          @click="confirm">ยืนยันเพิ่มเฉพาะรายการที่เสนอ</button>
+        <button type="button" :disabled="busy" @click="proposal = undefined">ยกเลิก</button>
       </div>
       <p class="muted">คำแนะนำไม่เปลี่ยนตารางเอง และไม่ตีความประวัติแชตว่าเป็นกิจกรรมที่ทำจริง</p>
     </section>
@@ -1393,6 +1467,9 @@ watch(advanced, (value) => {
 .reorder-dragging { opacity: 0.55; }
 .planner-header-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .habit-suggestions { padding: 14px; border: 1px solid #d5dfd0; background: #f8faf6; border-radius: 12px; margin-bottom: 12px; }
+.habit-quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.habit-quick-actions button, .habit-trial-preview button { padding: 8px 12px; border: 1px solid #9bad93; border-radius: 8px; background: #edf3e8; }
+.habit-trial-preview { border-top: 1px solid #d5dfd0; padding: 12px 0; margin-top: 12px; }
 .habit-suggestion-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #d5dfd0; padding: 9px 0; flex-wrap: wrap; }
 .habit-suggestion-item p { color: #64735c; font-size: 11px; margin: 4px 0; }
 .habit-suggestion-item button { border: 1px solid #9bad93; border-radius: 8px; padding: 8px; background: #edf3e8; }
