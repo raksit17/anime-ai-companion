@@ -8,6 +8,7 @@ import {
   previewDailyCapacityIncrease,
   simpleAddFromMessage,
   parseMultipleNewTasks,
+  parseNaturalThaiTimedBatch,
   parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   parseScheduledAdd,
@@ -2684,4 +2685,102 @@ test("chat 'assignment เสร็จตอนนี้' saves real completion 
   });
   assert.equal(repeat.message.id, response.message.id);
   assert.equal((await p.get()).sessions[0].completedAt, saved.sessions[0].completedAt);
+});
+
+const colloquialBatch = "วันนี้ เพิ่ม อ่านข่าวตอน 9 โมง และ ทำความสะอาดห้อง อย่างละ 15 นาที";
+
+test("natural Thai batch: 'อ่านข่าวตอน 9 โมง ... อย่างละ 15 นาที' resolves two clean activities", () => {
+  const at0919 = Date.parse("2026-10-26T09:19:00+07:00");
+  assert.deepEqual(
+    parseNaturalThaiTimedBatch(colloquialBatch, "2026-10-26", at0919),
+    { date: "2026-10-26", names: ["อ่านข่าว", "ทำความสะอาดห้อง"],
+      durations: [15, 15], requestedStart: 540 },
+  );
+  assert.deepEqual(
+    parseNaturalThaiTimedBatch(
+      "พรุ่งนี้ ช่วยเพิ่ม อ่านข่าวตอน 9 โมง และ ทำความสะอาดห้อง อย่างละ 15 นาที",
+      "2026-10-26", at0919),
+    { date: "2026-10-27", names: ["อ่านข่าว", "ทำความสะอาดห้อง"],
+      durations: [15, 15], requestedStart: 540 },
+  );
+  assert.equal(parseNaturalThaiTimedBatch(
+    "วันนี้เพิ่มอ่านข่าวตอน 9 โมง ได้ไหม?", "2026-10-26", at0919), undefined);
+  assert.equal(parseNaturalThaiTimedBatch(
+    "วันนี้เพิ่มอ่านข่าวตอน 3 โมง และทำความสะอาดอย่างละ 15 นาที",
+    "2026-10-26", at0919), undefined);
+});
+
+test("natural Thai two-task plan preserves exact 09:00 when it is a future date", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const { p, ai } = fixture(initial());
+  ai.plannerCompletion = async () => {
+    throw new Error("confident natural Thai intent must not be guessed by AI");
+  };
+  const response = await p.chat({
+    ...dto, requestId: "natural-tomorrow-two", date: today(),
+    message: "พรุ่งนี้ เพิ่ม อ่านข่าวตอน 9 โมง และ ทำความสะอาดห้อง อย่างละ 15 นาที",
+    autoApply: true,
+  });
+  assert.match(response.message.outcome ?? "", /รอยืนยันแผนเพิ่ม 2 กิจกรรม/);
+  assert.ok(response.proposal);
+  assert.deepEqual(response.proposal!.sessions.map((x: any) => [
+    x.date, x.name, x.start, x.duration,
+  ]), [
+    [date, "อ่านข่าว", 540, 15],
+    [date, "ทำความสะอาดห้อง", 570, 15],
+  ]);
+  assert.match(response.message.content, /09:00–09:15/);
+  assert.match(response.message.content, /09:30–09:45/);
+  assert.equal((await p.get()).sessions.length, 0);
+  await p.confirm(response.proposal!.id);
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 2);
+  assert.deepEqual(saved.sessions.map((x: any) => x.id),
+    response.proposal!.sessions.map((x: any) => x.id));
+});
+
+test("natural Thai 09:00 today is never booked retroactively and never throws HTTP 400", async () => {
+  const date = today();
+  const { p, ai } = fixture(initial());
+  ai.plannerCompletion = async () => {
+    throw new Error("clear user phrase must bypass model action parser");
+  };
+  const before = Date.now();
+  const response = await p.chat({
+    ...dto, requestId: "natural-today-two", date, message: colloquialBatch,
+    autoApply: true,
+  });
+  assert.match(response.message.content, /ยูนะ|ได้เลยค่ะ|ยังจัดกิจกรรม/);
+  assert.equal((await p.get()).sessions.length, 0);
+  if (response.proposal) {
+    const items = response.proposal.sessions;
+    assert.equal(items.length, 2);
+    assert.deepEqual(items.map((item: any) => item.name), ["อ่านข่าว", "ทำความสะอาดห้อง"]);
+    assert.deepEqual(items.map((item: any) => item.duration), [15, 15]);
+    assert.ok(items[0].start >= 540);
+    assert.ok(Date.parse(date + "T00:00:00+07:00") + items[0].start * 60000 >= before);
+    assert.ok(items[1].start >= items[0].start + 30);
+    if (before >= Date.parse(date + "T09:00:00+07:00"))
+      assert.match(response.message.content, /ผ่านไปแล้วหรือไม่ว่าง/);
+  } else {
+    assert.match(response.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  }
+});
+
+test("natural shared-duration batch returns helpful refusal when two slots cannot fit", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 20;
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("should validate real capacity before any model");
+  };
+  const result = await p.chat({
+    ...dto, requestId: "natural-two-cap", date: today(),
+    message: "พรุ่งนี้ เพิ่ม อ่านข่าวตอน 9 โมง และ ทำความสะอาดห้อง อย่างละ 15 นาที",
+    autoApply: true,
+  });
+  assert.match(result.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.match(result.message.content, /ยังจัดกิจกรรมใหม่ทั้ง 2 รายการ/);
+  assert.equal(result.proposal, undefined);
+  assert.equal((await p.get()).sessions.length, 0);
 });
