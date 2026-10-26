@@ -66,6 +66,7 @@ import {
   SettingsDto,
   SwapSessionsDto,
   EditSessionTimeDto,
+  RenameSessionDto,
 } from "./dto";
 import {
   fits,
@@ -77,6 +78,7 @@ import {
   classifyActivity,
   actualWorkedMinutes,
   releasedEarlyMinutes,
+  activityKeyFor,
   initial,
   plan,
   Session,
@@ -450,6 +452,41 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       this.changed(s);
       return event;
     }, true);
+  }
+  renameSession(id: string, dto: RenameSessionDto) {
+    return this.access((state) => {
+      // A title is a property of one calendar occurrence; never rewrite
+      // the recurring goal or other sessions with the same goalId.
+      if (state.revision !== dto.expectedRevision)
+        throw new ConflictException(
+          "ตารางมีการเปลี่ยนแปลงแล้ว กรุณาโหลดตารางล่าสุดก่อนแก้ชื่อกิจกรรม",
+        );
+      const session = state.sessions.find((item) => item.id === id);
+      if (!session) throw new NotFoundException("ไม่พบกิจกรรมในตาราง");
+      if (typeof dto.name !== "string" || !dto.name.trim() ||
+          dto.name.length > 120)
+        throw new BadRequestException("ชื่อกิจกรรมต้องมีข้อความและไม่เกิน 120 ตัวอักษร");
+      const name = dto.name.trim().normalize("NFC");
+      const changed = session.name !== name;
+      if (changed) {
+        session.name = name;
+        // Explicitly recompute clustering identity so the renamed slot
+        // appears under the correct category in historical analytics.
+        session.category = classifyActivity(name);
+        session.activityKey = activityKeyFor(name);
+        this.changed(state); // Invalidates any earlier planning proposal.
+      }
+      return {
+        ok: true, changed, revision: state.revision,
+        session: {
+          id: session.id, name: session.name, date: session.date,
+          start: session.start, duration: session.duration,
+          status: session.status, fixed: session.fixed,
+          goalId: session.goalId, activityKey: session.activityKey,
+          category: session.category,
+        },
+      };
+    }, true); // Immutable "updated" event is written in same transaction.
   }
   editSessionTime(id: string, dto: EditSessionTimeDto) {
     this.date(dto.date);
@@ -1665,6 +1702,11 @@ class PlannerController {
   }
   @Post("events") event(@Body() d: EventDto) {
     return this.planner.event(d);
+  }
+  @Patch("sessions/:id/name") renameSession(
+    @Param("id") id: string, @Body() dto: RenameSessionDto,
+  ) {
+    return this.planner.renameSession(id, dto);
   }
   @Patch("sessions/:id/schedule") editSessionTime(
     @Param("id") id: string, @Body() dto: EditSessionTimeDto,
