@@ -15,7 +15,7 @@ export function classifyActivity(name: string): ActivityCategory {
   if (/ออกกำลังกาย|ออกกำลัง|fitness|workout|วิ่ง|โยคะ/u.test(n)) return "exercise";
   if (/ทำความสะอาด|ล้างจาน|ซักผ้า|กวาด|จัดห้อง|เก็บห้อง/u.test(n)) return "chores";
   if (/นอน|พักผ่อน|สมาธิ|meditat/u.test(n)) return "wellbeing";
-  if (/assignment|playtorium|หางาน|สมัครงาน|resume|project|โปรเจค|ทำงาน/u.test(n)) return "work";
+  if (/assignment|playtorium|หางาน|สมัครงาน|resume|project|โปรเจค|โปรเจกต์|โปรเจกต|ทำงาน/u.test(n)) return "work";
   if (/เรียน|ฝึก|ติว|ศึกษา|อ่านข่าว|ภาษาอังกฤษ|coding|code|devops|toeic|bbc/u.test(n)) return "study";
   return "other";
 }

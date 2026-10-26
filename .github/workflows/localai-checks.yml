@@ -28,6 +28,8 @@ jobs:
       - run: npm run test -w apps/web
       - name: Typecheck new Vue Vision UI (without proprietary Live2D renderer)
         run: ./node_modules/.bin/vue-tsc -p apps/web/tsconfig.vision.json --noEmit
+      - name: Typecheck Yuna Daily Planner and analytics charts
+        run: ./node_modules/.bin/vue-tsc -p apps/web/tsconfig.planner.json --noEmit
       - name: Full web build (requires separately installed Live2D renderer)
         if: ${{ hashFiles('vendor/pixi-live2d5/dist/index.es.js') != '' }}
         run: npm run build -w apps/web

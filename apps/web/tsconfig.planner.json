@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/components/DailyPlanner.vue",
+    "src/components/PlannerAdvanced.vue",
+    "src/components/DailyTimeAnalytics.vue",
+    "src/api.ts",
+    "src/stores/chat.ts",
+    "src/services/request-id.ts"
+  ],
+  "exclude": [
+    "src/services/live2d-adapter.ts"
+  ]
+}

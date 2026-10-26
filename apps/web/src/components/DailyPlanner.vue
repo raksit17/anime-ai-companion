@@ -11,6 +11,7 @@ import { api } from "../api";
 import { generateRequestId } from "../services/request-id";
 import { useChat } from "../stores/chat";
 import PlannerAdvanced from "./PlannerAdvanced.vue";
+import DailyTimeAnalytics from "./DailyTimeAnalytics.vue";
 type Session = {
   id: string;
   name: string;
@@ -794,6 +795,7 @@ watch(advanced, (value) => {
             >
           </button>
         </div>
+        <DailyTimeAnalytics :date="date" :revision="scheduleRevision" />
         <details class="month-picker">
           <summary>เปิดปฏิทินรายเดือน</summary>
           <div class="month-nav">

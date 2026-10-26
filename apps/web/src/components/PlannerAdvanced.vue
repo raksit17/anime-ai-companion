@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api";
+import DailyTimeAnalytics from "./DailyTimeAnalytics.vue";
 type Session = {
   id: string;
   name: string;
@@ -97,6 +98,7 @@ type Weekly = {
 const habits = ref<Habits>();
 const daysWindow = ref(90);
 const data = ref<{
+  revision: number;
   weekly: Weekly;
   weeklyReport?: { text: string; generatedAt: string };
   goals: Goal[];
@@ -406,6 +408,7 @@ async function checkNotifications() {
         </template>
       </details>
       <label>วันที่ <input type="date" v-model="date" required /></label>
+      <DailyTimeAnalytics :date="date" :revision="data?.revision ?? 0" />
       <label
         >พลังงาน
         <select v-model="energy">
