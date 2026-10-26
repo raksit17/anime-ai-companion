@@ -795,6 +795,7 @@ watch(advanced, (value) => {
             >
           </button>
         </div>
+        <DailyTimeAnalytics :date="date" :revision="scheduleRevision" />
         <details class="month-picker">
           <summary>เปิดปฏิทินรายเดือน</summary>
           <div class="month-nav">
@@ -821,7 +822,6 @@ watch(advanced, (value) => {
             </button>
           </div>
         </details>
-        <DailyTimeAnalytics :date="date" :revision="scheduleRevision" />
         <div class="day-stats">
           <span
             ><strong>{{ done }}/{{ daySessions.length }}</strong> สำเร็จ</span
