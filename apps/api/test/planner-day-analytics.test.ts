@@ -100,7 +100,7 @@ test("clamps slots outside awake time and keeps past remaining-free at zero", ()
     session("late", "ทำโปรเจกต์", 1300, 90, { date: "2026-10-24" }),
   ];
   const day = analyzeDay(state, "2026-10-24", now);
-  assert.equal(day.reservedMinutes, 60);
+  assert.equal(day.reservedMinutes, 80); // 60m morning + 20m before bedtime
   assert.equal(day.futureFreeMinutes, 0);
   assert.equal(day.sleepMinutes + day.awakeMinutes, 1440);
   assert.equal(day.timeline.reduce((n, x) => n + x.minutes, 0), 1440);
