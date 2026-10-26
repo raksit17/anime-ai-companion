@@ -86,8 +86,7 @@ const date = ref(today()),
   editError = ref(""),
   renamingSessionId = ref(""),
   editName = ref(""),
-  editNameError = ref(""),
-  renameInput = ref<HTMLInputElement>();
+  editNameError = ref("");
 type HabitSuggestion = {
   activityKey: string; name: string; suggestedMinutes: number;
   preferredStart: number; evidenceCount: number; reason: string;
@@ -409,7 +408,7 @@ function openNameEditor(session: Session) {
   editName.value = session.name;
   editNameError.value = "";
   reorderMessage.value = "";
-  void nextTick(() => renameInput.value?.focus());
+  void nextTick(() => document.getElementById("planner-name-input-" + session.id)?.focus());
 }
 async function saveNameEdit(session: Session) {
   if (busy.value || renamingSessionId.value !== session.id) return;
@@ -1002,7 +1001,6 @@ watch(advanced, (value) => {
                     <label :for="'planner-name-input-' + s.id">ชื่อหัวข้อกิจกรรม</label>
                     <input
                       :id="'planner-name-input-' + s.id"
-                      ref="renameInput"
                       v-model="editName"
                       type="text"
                       maxlength="120"
