@@ -36,12 +36,14 @@ import {
   parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   completeScheduledAdd,
+  replaceRejectedAddStart,
   simpleAddFromMessage,
   plannerConflictFallback,
   previewDailyCapacityIncrease,
   plannerMessages,
   plannerChatSchema,
   type ChatOutput,
+  type Command,
   type DailyCapacityPreview,
   type PlannerConstraint,
   type PlannerFollowUp,
@@ -108,6 +110,8 @@ type PlannerMessage = {
   outcome?: string;
   proposalId?: string;
   followUps?: PlannerFollowUp[];
+  /** Verified rejected single add intent, to resolve "เริ่ม 19:45 แทน". */
+  pendingAdd?: Command;
   appliedChanges?: Array<{
     id: string;
     date: string;
@@ -680,6 +684,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let requireBatchApproval = false;
     let batchApprovalCount = 0;
     let blocked: PlannerConstraint | undefined;
+    let rejectedAdd: Command | undefined;
     let capacityPreview: DailyCapacityPreview | undefined;
     try {
       const relevant = snapshot.sessions.filter(
@@ -761,7 +766,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         : parseBatchAlternativeFollowUp(history, dto.message, dto.date);
       multipleAdds = directMultipleAdds ?? alternativeBatch;
       timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry || finishIntent ? undefined :
-        (parseScheduledAdd(dto.message, dto.date) ??
+        (replaceRejectedAddStart(history, dto.message, dto.date) ??
+          parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
@@ -1181,6 +1187,13 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         try {
           executeCommands(snapshot, output.actions, dto.date);
         } catch (e) {
+          // Preserve only the concrete rejected single-add request,
+          // not Ollama's explanation, for the next clock-only reply.
+          rejectedAdd = output.actions.length === 1 &&
+            output.actions[0].type === "add" &&
+            output.actions[0].name && output.actions[0].date &&
+            output.actions[0].duration && output.actions[0].start !== undefined
+              ? { ...output.actions[0] } : undefined;
           blocked = explainPlannerConstraint(
             snapshot,
             output.actions,
@@ -1292,6 +1305,11 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         try {
           result = executeCommands(s, output.actions, dto.date);
         } catch (e) {
+          if (output.actions.length === 1 &&
+              output.actions[0].type === "add" &&
+              output.actions[0].name && output.actions[0].date &&
+              output.actions[0].duration && output.actions[0].start !== undefined)
+            rejectedAdd = { ...output.actions[0] };
           // A clock-boundary conflict can occur after snapshot validation
           // without a revision change. Still return a useful chat reply.
           blocked = explainPlannerConstraint(
@@ -1519,6 +1537,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         createdAt,
         requestId: dto.requestId,
         outcome,
+        pendingAdd: blocked ? rejectedAdd : undefined,
         proposalId: proposal?.id,
         followUps: blocked?.followUps ?? insertionFollowUps,
         appliedChanges,
