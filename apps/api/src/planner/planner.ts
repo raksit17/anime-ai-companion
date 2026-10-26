@@ -1461,7 +1461,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           // the prose with a receipt derived from the validated state diff.
           // This also covers LLM-arranged bookings without a user-supplied
           // exact clock, where placement is allowed but must be transparent.
-          if (changedItems.length &&
+          if (changedItems.length && !requireBatchApproval &&
               !editedItem && !resizedItem && !exactRequest &&
               !finishIntent?.command) {
             const fmt = (minutes: number) =>
