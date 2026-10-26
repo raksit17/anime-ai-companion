@@ -166,6 +166,80 @@ export function parseScheduledAdd(
   return { command: { type: "add", name, date, start, duration, fixed: false } };
 }
 
+/** The user can replace ONLY the start clock of the latest *rejected* add:
+ * "ฝึกอังกฤษ 19:00–19:30" -> refusal -> "เริ่ม 19:45 แทน".
+ * Keep task name, date, duration from the user's request, never AI prose.
+ * Handles legacy missing-duration exchanges ("30 นาที") as an intermediate turn.
+ */
+export function replaceRejectedAddStart(
+  history: {
+    role: string; content: string; outcome?: string;
+    pendingAdd?: Command;
+  }[],
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const text = message.trim();
+  const move = text.match(
+    /^(?:(?:งั้น|ถ้างั้น|โอเค|ขอ|ช่วย|เอา|เปลี่ยนเป็น)\s*)?(?:เริ่ม(?:เวลา)?|เริ่มที่|เป็นเวลา|เวลา|ใช้เวลาเริ่ม|ขอเป็น|เปลี่ยนไป|เลื่อนไป)\s*(\d{1,2}):(\d{2})\s*(?:แทน|ก็ได้|เลย|นะ|ครับ|ค่ะ|ด้วย)?\s*$/u,
+  );
+  if (!move) return undefined;
+  const latest = history.at(-1);
+  if (latest?.role !== "assistant" ||
+      !latest.outcome?.startsWith("ยังไม่ได้เปลี่ยนตาราง"))
+    return undefined;
+  const hours = Number(move[1]), minutes = Number(move[2]);
+  if (hours > 23 || minutes > 59)
+    return { reason: "เวลาเริ่มใหม่ไม่ถูกต้อง กรุณาระบุ HH:MM" };
+  const requestedStart = hours * 60 + minutes;
+  let original: Command | undefined;
+  // New refusals carry a structured failed intent. It survives reloading
+  // and never relies on untrusted generated assistant wording.
+  const pending = latest.pendingAdd;
+  if (pending?.type === "add" && pending.name &&
+      pending.date && pending.duration && pending.start !== undefined)
+    original = pending;
+
+  if (!original) {
+    // Legacy history: find the most recent original USER request, allowing
+    // a single intervening "30 นาที" response. Stop on unrelated user turns.
+    let durationReply: string | undefined;
+    const recent = history.slice(-12, -1);
+    for (const entry of [...recent].reverse()) {
+      if (entry.role !== "user") continue;
+      const durationOnly = entry.content.trim().match(
+        /^(?:(?:นาน|ใช้เวลา|ระยะเวลา)\s*)?(\d{1,3})\s*(นาที|ชั่วโมง)\s*(?:ครับ|ค่ะ|นะ)?$/u,
+      );
+      if (durationOnly && !durationReply) {
+        durationReply = durationOnly[1] + " " + durationOnly[2];
+        continue;
+      }
+      const parsed = parseScheduledAdd(entry.content, selected, now);
+      if (parsed?.command?.type === "add" && parsed.command.start !== undefined)
+        original = parsed.command;
+      else if (parsed?.reason?.includes("นานกี่นาที") && durationReply)
+        original = parseScheduledAdd(
+          entry.content + " ระยะเวลา " + durationReply, selected, now,
+        )?.command;
+      break;
+    }
+  }
+  if (!original?.name || !original.date || !original.duration ||
+      original.start === undefined)
+    return { reason: "ยังไม่พบคำขอเพิ่มกิจกรรมก่อนหน้าที่ระบุชื่อ วัน และระยะเวลาได้ชัดเจน กรุณาพิมพ์ชื่อกิจกรรมและเวลาใหม่อีกครั้ง" };
+  if (!validDate(original.date))
+    return { reason: "วันที่กิจกรรมในคำขอเดิมไม่ถูกต้อง" };
+  return { command: {
+    type: "add",
+    name: original.name,
+    date: original.date,
+    start: requestedStart,
+    duration: original.duration,
+    fixed: original.fixed ?? false,
+  } };
+}
+
 /** If a user answers the missing-duration question, complete only the last
  * rejected timed addition, without reinterpreting unrelated earlier chats. */
 export function completeScheduledAdd(
