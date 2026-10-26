@@ -32,6 +32,7 @@ import {
   parseExistingTimeMove,
   parseScheduledAdd,
   parseMultipleNewTasks,
+  parseNaturalThaiTimedBatch,
   parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   completeScheduledAdd,
@@ -567,6 +568,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     let durationEdit: ReturnType<typeof parseDurationEdit>;
     let timedAdd: ReturnType<typeof parseScheduledAdd>;
     let multipleAdds: ReturnType<typeof parseMultipleNewTasks>;
+    let naturalTimedBatch: ReturnType<typeof parseNaturalThaiTimedBatch>;
     let alternativeBatch: ReturnType<typeof parseMultipleNewTasks>;
     let shiftedBatch: ReturnType<typeof parseGroupShiftPlan>;
     let insertInquiry: ReturnType<typeof previewInsertionMinutes>;
@@ -616,23 +618,26 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           ? snapshot.proposal.sessions.filter((task) =>
               !snapshot.sessions.some((previous) => previous.id === task.id))
           : [];
-      finishIntent = parseFinishNowIntent(snapshot, dto.date, dto.message);
-      insertInquiry = finishIntent ? undefined :
+      naturalTimedBatch = parseNaturalThaiTimedBatch(dto.message, dto.date);
+      finishIntent = naturalTimedBatch ? undefined :
+        parseFinishNowIntent(snapshot, dto.date, dto.message);
+      insertInquiry = finishIntent || naturalTimedBatch ? undefined :
         previewInsertionMinutes(snapshot, dto.date, dto.message);
-      shiftedBatch = insertInquiry || finishIntent ? undefined : parseGroupShiftPlan(
+      shiftedBatch = insertInquiry || finishIntent || naturalTimedBatch ? undefined : parseGroupShiftPlan(
         snapshot, dto.date, dto.message, pendingProposal,
         latestReply?.role === "assistant" &&
           latestReply.outcome?.startsWith("รอยืนยันแผนเพิ่ม")
           ? latestReply.content : "",
       );
-      durationEdit = shiftedBatch || insertInquiry || finishIntent ? undefined :
+      durationEdit = shiftedBatch || insertInquiry || finishIntent || naturalTimedBatch ? undefined :
         parseExerciseWithBreaks(snapshot, dto.date, dto.message) ??
         parseTimeDurationEdit(snapshot, dto.date, dto.message) ??
         parseExistingTimeMove(snapshot, dto.date, dto.message) ??
         parseDurationEdit(snapshot, dto.date, dto.message) ??
         parseConversationalDurationEdit(snapshot, dto.date, dto.message);
-      const directMultipleAdds = durationEdit || shiftedBatch || insertInquiry || finishIntent ? undefined :
-        parseMultipleNewTasks(dto.message, dto.date);
+      const directMultipleAdds = naturalTimedBatch ??
+        (durationEdit || shiftedBatch || insertInquiry || finishIntent ? undefined :
+        parseMultipleNewTasks(dto.message, dto.date));
       alternativeBatch = durationEdit || shiftedBatch || insertInquiry || finishIntent || directMultipleAdds
         ? undefined
         : parseBatchAlternativeFollowUp(history, dto.message, dto.date);
@@ -821,7 +826,41 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             }));
             try {
               let draft: ReturnType<typeof executeCommands>;
-              if (alternativeAfter !== undefined) {
+              if (naturalTimedBatch) {
+                const staged = structuredClone(snapshot);
+                const gap = Math.max(15, staged.settings.breakMinutes);
+                const currentMinutes = (Date.now() - Date.parse(
+                  naturalTimedBatch.date + "T00:00:00+07:00")) / 60000;
+                // If the desired clock has passed, preview a future slot
+                // explicitly instead of falsely saying 09:00 was booked.
+                let cursor = Math.max(
+                  naturalTimedBatch.requestedStart,
+                  naturalTimedBatch.date === today()
+                    ? Math.ceil((currentMinutes + 5) / 5) * 5
+                    : staged.settings.wake,
+                );
+                for (const action of requested) {
+                  let placed: ReturnType<typeof executeCommands> | undefined;
+                  let reason = "";
+                  for (let start = Math.ceil(cursor / 5) * 5;
+                    start + action.duration <= staged.settings.sleep;
+                    start += 5) {
+                    try {
+                      placed = executeCommands(staged, [{ ...action, start }], dto.date);
+                      break;
+                    } catch (error) {
+                      reason = (error as Error).message;
+                    }
+                  }
+                  if (!placed) throw new Error(reason || "ไม่พบเวลาว่างที่จัดต่อเนื่องได้");
+                  const next = placed.sessions.find((item) =>
+                    !staged.sessions.some((previous) => previous.id === item.id));
+                  if (!next) throw new Error("ยังตรวจสอบเวลาที่เพิ่มไม่ได้");
+                  staged.sessions = placed.sessions;
+                  cursor = next.start + next.duration + gap;
+                }
+                draft = { sessions: staged.sessions, notices: [] };
+              } else if (alternativeAfter !== undefined) {
                 const staged = structuredClone(snapshot);
                 let cursor = alternativeAfter;
                 const minimumBreak = Math.max(15, staged.settings.breakMinutes);
@@ -873,9 +912,17 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
               !snapshot.sessions.some((old) => old.id === item.id));
             batchApprovalCount = added.length;
             output = {
-              reply: (alternativeBatch
-                  ? "ยูนะตรวจตารางจริงแล้วและเสนอช่วงเวลาใหม่ให้ค่ะ"
-                  : "ยูนะตรวจตารางจริงแล้วและจัดช่วงเวลาที่ไม่ชนกิจกรรมเดิมให้ค่ะ") +
+              reply: (naturalTimedBatch
+                  ? (added[0].start !== naturalTimedBatch.requestedStart
+                      ? "ยูนะเข้าใจแล้วค่ะ สองงาน งานละ " +
+                        naturalTimedBatch.durations[0] +
+                        " นาทีใช่ไหมคะ? แต่เวลา " +
+                        clock(naturalTimedBatch.requestedStart) +
+                        " ที่ขอผ่านไปแล้วหรือไม่ว่าง ยูนะเลยเสนอช่วงใหม่ให้ดูก่อนนะคะ"
+                      : "ได้เลยค่ะ ยูนะจัดตามเวลาที่บอกไว้ และเว้นพักให้แต่ละกิจกรรมแล้วนะคะ")
+                  : alternativeBatch
+                    ? "ยูนะตรวจตารางจริงแล้วและเสนอช่วงเวลาใหม่ให้ค่ะ"
+                    : "ยูนะตรวจตารางจริงแล้วและจัดช่วงเวลาที่ไม่ชนกิจกรรมเดิมให้ค่ะ") +
                 " เป็นแผนตัวอย่างที่ยังไม่บันทึกนะคะ" +
                 (multipleAdds.durations.some((duration) => duration === undefined)
                   ? " สำหรับงานที่ไม่ได้บอกระยะเวลา ยูนะขอเสนอระยะเวลาตามตัวอย่างด้านล่างค่ะ" : "") + "\n" +
