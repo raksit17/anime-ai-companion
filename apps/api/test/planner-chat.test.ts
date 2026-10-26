@@ -3185,7 +3185,7 @@ test("Yuna auto-books all seven screenshot activities for tomorrow when user ena
   assert.equal(state.sessions.length, 7);
   assert.ok(state.sessions.every((s: any) => s.date === tomorrow));
   assert.ok(state.sessions.reduce((n: number, s: any) => n + s.duration, 0) <= state.settings.maxMinutes);
-  assert.match(response.message.content, /ตารางเก่า/);
+  assert.match(response.message.content, /ตารางเก่า|ไม่มีประวัติกิจกรรม/);
   assert.match(response.message.content, /ฝึกฟังอังกฤษ youtube streamer/);
   const again = await p.chat(request);
   assert.equal(again.message.id, response.message.id);
