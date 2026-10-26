@@ -82,7 +82,7 @@ import {
   today,
   validDate,
 } from "./engine";
-import { computeHabitProfile, diffSessionEvents } from "./history";
+import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "./history";
 type Proposal = {
   reasons?: string[];
   breakMinutes?: number;
@@ -234,6 +234,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         category: classifyActivity(
           ((event.after ?? event.before) as unknown as Session | null)?.name ?? "",
         ),
+        kind: event.kind as ActivityEventKind,
       })),
       durationDays,
     );
