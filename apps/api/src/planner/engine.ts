@@ -237,8 +237,32 @@ export function editDaySessionTime(
       breakMinutes: Math.max(15, state.settings.breakMinutes),
     },
   };
+  const asClock = (minutes: number) =>
+    String(Math.floor(minutes / 60)).padStart(2, "0") + ":" +
+    String(minutes % 60).padStart(2, "0");
+  const plannedEnd = start + duration;
+  if (start < strict.settings.wake)
+    throw new Error("เวลาเริ่ม " + asClock(start) +
+      " อยู่ก่อนเวลาเริ่มวัน " + asClock(strict.settings.wake));
+  if (plannedEnd > strict.settings.sleep)
+    throw new Error("เวลาเสร็จ " + asClock(plannedEnd) +
+      " เกินเวลาเข้านอน " + asClock(strict.settings.sleep) +
+      " กรุณาย้ายเวลาให้จบไม่เกิน " + asClock(strict.settings.sleep) +
+      " หรือลดระยะเวลากิจกรรม");
+  const gap = strict.settings.breakMinutes;
+  const conflict = strict.sessions.find((s) =>
+    s.id !== id && s.date === date &&
+    (s.status === "planned" || s.status === "done") &&
+    !(plannedEnd + gap <= s.start || start >= occupiedEnd(s) + gap));
+  if (conflict)
+    throw new Error("ช่วง " + asClock(start) + "–" +
+      asClock(plannedEnd) + " ชนหรือพักไม่ครบ " + gap +
+      " นาทีจากกิจกรรม " + conflict.name + " (" +
+      asClock(conflict.start) + "–" +
+      asClock(conflict.start + conflict.duration) +
+      ") กรุณาเลือกเวลาอื่น");
   if (!fits(strict, proposed, now))
-    throw new Error("เวลาที่แก้ชนกิจกรรมอื่น พักไม่ครบ 15 นาที อยู่นอกเวลาตื่น–นอน หรือเกินเพดานรายวัน");
+    throw new Error("ช่วงเวลานี้ไม่ผ่านเงื่อนไขตารางหรือเพดานกิจกรรมรายวัน กรุณาตรวจเวลาอีกครั้ง");
   // Non-recurring one-off activities are not accounted for by fits()'s
   // goal-based capacity guard. Preserve the current load, reject only
   // changes that add load beyond the daily cap.

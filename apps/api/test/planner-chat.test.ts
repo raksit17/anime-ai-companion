@@ -2133,7 +2133,7 @@ test("inline time edit rejects overlap, insufficient breaks and sleep violations
   ]) {
     await assert.rejects(() => p.editSessionTime("bbc", {
       date: future, start, duration, expectedRevision: 0,
-    }), /เวลาที่แก้ชนกิจกรรมอื่น/);
+    }), /พักไม่ครบ|เกินเวลาเข้านอน/);
   }
   const after = await p.get();
   assert.deepEqual(after.sessions, before.sessions);
@@ -3120,4 +3120,50 @@ test("replacement time already elapsed is rejected and never added retroactively
   assert.equal(intent?.command?.duration, 30);
   assert.throws(() => executeCommands(initial(), [intent!.command!], date, at2025),
     /19:45–20:15/);
+});
+
+
+test("Thai exact-time parser strips leftover ใน from 'เพิ่มเรียน toeic ในช่วง 20:00'", () => {
+  const day = "2026-10-26";
+  const prior = Date.parse("2026-10-26T18:00:00+07:00");
+  const raw = "เพิ่มเรียน toeic ในช่วง 20:00";
+  const ask = parseScheduledAdd(raw, day, prior);
+  assert.match(ask?.reason ?? "", /เรียน toeic.*20:00.*นานกี่นาที/);
+  assert.doesNotMatch(ask?.reason ?? "", /toeic ใน/u);
+  const completed = completeScheduledAdd([
+    { role: "user", content: raw },
+    { role: "assistant", content: ask!.reason!,
+      outcome: "ยังไม่ได้เปลี่ยนตาราง · " + ask!.reason! },
+  ], "30 นาที", day, prior);
+  assert.deepEqual(completed?.command, {
+    type: "add", name: "เรียน toeic", date: day,
+    start: 1200, duration: 30, fixed: false,
+  });
+  assert.equal(parseScheduledAdd("เรียนภาษาอังกฤษในชีวิตประจำวัน ช่วง 20:00 นาน 30 นาที",
+    day, prior)?.command?.name, "เรียนภาษาอังกฤษในชีวิตประจำวัน");
+});
+
+test("inline editor explains 21:40–22:10 bedtime violation and offers an allowed 20 minute edit", () => {
+  const day = new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10);
+  const state = initial();
+  state.settings.sleep = 1320;
+  state.settings.breakMinutes = 15;
+  state.sessions = [
+    { id: "toeic", name: "เรียน toeic", date: day,
+      start: 1200, duration: 30, status: "planned",
+      fixed: false, reminder: 10 },
+    { id: "english", name: "ฝึกภาษาอังกฤษจาก YouTube", date: day,
+      start: 1245, duration: 30, status: "planned",
+      fixed: false, reminder: 10 },
+  ];
+  const snapshot = structuredClone(state);
+  assert.throws(() => editDaySessionTime(state, "toeic", day, 1300, 30),
+    /22:10.*22:00.*ลดระยะเวลา/);
+  const valid = editDaySessionTime(state, "toeic", day, 1300, 20);
+  assert.equal(valid.start, 1300);
+  assert.equal(valid.duration, 20);
+  assert.equal(valid.start + valid.duration, state.settings.sleep);
+  assert.deepEqual(state, snapshot);
+  assert.throws(() => editDaySessionTime(state, "toeic", day, 1260, 20),
+    /ฝึกภาษาอังกฤษจาก YouTube|พักไม่ครบ/);
 });

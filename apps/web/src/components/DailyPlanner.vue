@@ -414,6 +414,34 @@ function parsedEditStart(): number | undefined {
   const [hour, minute] = editStart.value.split(":").map(Number);
   return hour < 24 && minute < 60 ? hour * 60 + minute : undefined;
 }
+const bedtimeEditOverflow = computed(() => {
+  const start = parsedEditStart();
+  return start !== undefined && Number.isFinite(editDuration.value) &&
+    start + editDuration.value > settings.value.sleep;
+});
+const bedtimeSuggestedDuration = computed(() => {
+  const start = parsedEditStart();
+  if (start === undefined || !bedtimeEditOverflow.value) return 0;
+  const duration = settings.value.sleep - start;
+  return duration >= 5 && duration <= 240 ? duration : 0;
+});
+const editTimeWarning = computed(() => {
+  const start = parsedEditStart();
+  if (start === undefined) return "";
+  if (start < settings.value.wake)
+    return "เริ่ม " + clock(start) + " ก่อนเวลาเริ่มวัน " +
+      clock(settings.value.wake);
+  const duration = Number(editDuration.value);
+  if (Number.isInteger(duration) && duration > 0 &&
+      start + duration > settings.value.sleep)
+    return "สิ้นสุด " + clock(start + duration) +
+      " เกินเวลาเข้านอน " + clock(settings.value.sleep) +
+      " ต้องลดระยะเวลาหรือเลือกช่วงเวลาอื่น";
+  if (date.value === today() &&
+      Date.parse(date.value + "T00:00:00+07:00") + start * 60000 <= now.value)
+    return "เวลาเริ่ม " + clock(start) + " ผ่านไปแล้ว กรุณาเลือกเวลาในอนาคต";
+  return "";
+});
 const editedEnd = computed(() => {
   const start = parsedEditStart();
   if (start === undefined || !Number.isInteger(editDuration.value) ||
@@ -433,6 +461,10 @@ async function saveTimeEdit(session: Session) {
   }
   if (start === session.start && duration === session.duration) {
     editError.value = "เวลาและระยะเวลายังเหมือนเดิม";
+    return;
+  }
+  if (editTimeWarning.value) {
+    editError.value = editTimeWarning.value;
     return;
   }
   busy.value = true;
@@ -455,7 +487,9 @@ async function saveTimeEdit(session: Session) {
     reorderMessage.value =
       `แก้เวลา ${result.session.name} เป็น ${clock(result.session.start)}–${clock(result.session.start + result.session.duration)} (${result.session.duration} นาที) แล้ว`;
   } catch (e) {
-    editError.value = String(e);
+    editError.value = friendlyChatError(e)
+      .replace(/^ยูนะยังจัดตารางให้ไม่ได้ค่ะ — /u, "")
+      .replace(/ \(ยังไม่ได้ยืนยันว่าตารางเปลี่ยนค่ะ\)$/u, "");
     try { await refresh(); } catch { /* Show the actual error. */ }
   } finally {
     busy.value = false;
@@ -987,9 +1021,18 @@ watch(advanced, (value) => {
                   <strong>{{ editedEnd || "กรุณาตรวจเวลาและระยะเวลา" }}</strong>
                   · พักระหว่างงานอย่างน้อย {{ Math.max(15, settings.breakMinutes) }} นาที
                 </p>
+                <p v-if="editTimeWarning" class="time-edit-error" role="status">
+                  {{ editTimeWarning }}
+                </p>
+                <div v-if="bedtimeSuggestedDuration" class="edit-time-buttons">
+                  <button type="button" :disabled="busy"
+                    @click="editDuration = bedtimeSuggestedDuration; editError = ''">
+                    ลดเหลือ {{ bedtimeSuggestedDuration }} นาที เพื่อจบก่อน {{ clock(settings.sleep) }}
+                  </button>
+                </div>
                 <p v-if="editError" class="time-edit-error" role="alert">{{ editError }}</p>
                 <div class="edit-time-buttons">
-                  <button type="submit" :disabled="busy || !editedEnd">บันทึกเวลา</button>
+                  <button type="submit" :disabled="busy || !editedEnd || !!editTimeWarning">บันทึกเวลา</button>
                   <button type="button" :disabled="busy" @click="cancelTimeEditor">ยกเลิก</button>
                 </div>
               </form>
