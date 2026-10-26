@@ -135,3 +135,92 @@ test("empty week does not request AI", async () => {
   };
   assert.match((await p.weeklyAnalysis()).text, /ยังไม่มี/);
 });
+
+
+test("rename changes just one session title, updates its cluster and preserves goal/timing", async () => {
+  const p = fixture();
+  await p.goal(goal);
+  await p.confirm((await p.propose({ date, energy: "normal" })).id);
+  const before = await p.get();
+  const target = before.sessions[0];
+  const result = await p.renameSession(target.id, {
+    name: "  ออกกำลังกาย  ", expectedRevision: before.revision,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.changed, true);
+  const after = await p.get();
+  const edited = after.sessions.find((s: any) => s.id === target.id);
+  assert.equal(edited.name, "ออกกำลังกาย");
+  assert.equal(edited.category, "exercise");
+  assert.equal(edited.activityKey, "exercise:ออกกำลังกาย");
+  assert.equal(edited.goalId, target.goalId);
+  assert.equal(edited.date, target.date);
+  assert.equal(edited.start, target.start);
+  assert.equal(edited.duration, target.duration);
+  assert.equal(edited.status, target.status);
+  assert.equal(edited.fixed, target.fixed);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.goals[0].name, "Coding");
+  assert.equal(after.sessions.filter((s: any) => s.id !== target.id)
+    .every((s: any) => s.name === "Coding"), true);
+});
+test("rename completed historical activity without altering progress or completion metadata", async () => {
+  const p = fixture();
+  await p.goal(goal);
+  await p.confirm((await p.propose({ date, energy: "normal" })).id);
+  const target = (await p.get()).sessions[0];
+  await p.progress(target.id, { status: "done", note: "Reviewed code" });
+  const before = await p.get();
+  const result = await p.renameSession(target.id, {
+    name: "ทบทวน TypeScript", expectedRevision: before.revision,
+  });
+  const after = await p.get();
+  const updated = after.sessions.find((s: any) => s.id === target.id);
+  assert.equal(result.changed, true);
+  assert.equal(updated.name, "ทบทวน TypeScript");
+  assert.equal(updated.status, "done");
+  assert.equal(updated.note, "Reviewed code");
+  assert.equal(updated.completedAt,
+    before.sessions.find((s: any) => s.id === target.id).completedAt);
+  assert.equal(after.progress.done, before.progress.done);
+  assert.equal(after.progress.minutes, before.progress.minutes);
+});
+test("rename validates missing/blank/overlong names and rejects stale revisions", async () => {
+  const p = fixture();
+  await p.goal(goal);
+  await p.confirm((await p.propose({ date, energy: "normal" })).id);
+  const before = await p.get();
+  const id = before.sessions[0].id;
+  await assert.rejects(() => p.renameSession("not-found", {
+    name: "Anything", expectedRevision: before.revision,
+  }), /ไม่พบ/);
+  await assert.rejects(() => p.renameSession(id, {
+    name: "    ", expectedRevision: before.revision,
+  }), /ชื่อกิจกรรม/);
+  await assert.rejects(() => p.renameSession(id, {
+    name: "A".repeat(121), expectedRevision: before.revision,
+  }), /ชื่อกิจกรรม/);
+  const noop = await p.renameSession(id, {
+    name: "Coding", expectedRevision: before.revision,
+  });
+  assert.equal(noop.changed, false);
+  assert.equal((await p.get()).revision, before.revision);
+  await p.renameSession(id, {
+    name: "Updated", expectedRevision: before.revision,
+  });
+  await assert.rejects(() => p.renameSession(id, {
+    name: "Stale", expectedRevision: before.revision,
+  }), /ตารางมีการเปลี่ยนแปลง/);
+  assert.equal((await p.get()).sessions[0].name, "Updated");
+});
+test("renaming a saved session invalidates existing planner proposals", async () => {
+  const p = fixture();
+  await p.goal(goal);
+  await p.confirm((await p.propose({ date, energy: "normal" })).id);
+  const pending = await p.propose({ date, energy: "low" });
+  const state = await p.get();
+  const id = state.sessions[0].id;
+  await p.renameSession(id, { name: "New title", expectedRevision: state.revision });
+  await assert.rejects(() => p.confirm(pending.id), /หมดอายุ|ข้อมูลเปลี่ยน/);
+  assert.equal((await p.get()).sessions[0].name, "New title");
+});
