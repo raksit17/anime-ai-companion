@@ -26,7 +26,7 @@ import {
   explainExtendFollowUp,
   plannerMessages,
 } from "../src/planner/chat-engine";
-import { initial, today, plan, swapDaySessions, editDaySessionTime, finishSessionNow, occupiedEnd, releasedEarlyMinutes, occupiedMinutes, fits } from "../src/planner/engine";
+import { initial, today, plan, swapDaySessions, editDaySessionTime, finishSessionNow, completedBeforeScheduledStart, occupiedEnd, releasedEarlyMinutes, occupiedMinutes, fits } from "../src/planner/engine";
 const require = createRequire(import.meta.url);
 const { PlannerService } = require("../dist/planner/planner.js");
 const now = Date.parse("2030-01-07T00:00:00+07:00"),
@@ -2783,4 +2783,101 @@ test("natural shared-duration batch returns helpful refusal when two slots canno
   assert.match(result.message.content, /ยังจัดกิจกรรมใหม่ทั้ง 2 รายการ/);
   assert.equal(result.proposal, undefined);
   assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("finishing job search at 11:18 before the planned 13:35 start is off-schedule, NOT 30 minutes early", () => {
+  const state = initial();
+  const date = "2026-10-26";
+  const now = Date.parse("2026-10-26T11:18:00+07:00");
+  state.sessions = [{
+    id: "job-search", date, name: "หางาน", start: 815, duration: 30,
+    fixed: false, status: "planned", reminder: 10,
+  }];
+  const finished = finishSessionNow(state.sessions[0], now);
+  assert.equal(completedBeforeScheduledStart(finished), true);
+  assert.equal(occupiedEnd(finished), 845);
+  assert.equal(releasedEarlyMinutes(finished), 0);
+  assert.equal(occupiedMinutes(finished), 30);
+  assert.equal(finished.duration, 30);
+  assert.equal(finished.start, 815);
+  assert.equal(finished.completedAt, "2026-10-26T04:18:00.000Z");
+  const at1400 = Date.parse("2026-10-26T13:00:00+07:00");
+  state.sessions[0] = finished;
+  assert.equal(fits(state, {
+    id: "study", name: "ฝึกสัมภาษณ์", date, start: 825,
+    duration: 15, status: "planned", fixed: false, reminder: 10,
+  }, at1400), false);
+});
+
+test("late 11:28 completion of a 10:45–11:15 task does not count as recovered time", () => {
+  const session = {
+    id: "reading", name: "อ่านข่าว", date: "2026-10-26",
+    start: 645, duration: 30, fixed: false as const,
+    status: "planned" as const, reminder: 10,
+  };
+  const complete = finishSessionNow(session,
+    Date.parse("2026-10-26T11:28:00+07:00"));
+  assert.equal(completedBeforeScheduledStart(complete), false);
+  assert.equal(releasedEarlyMinutes(complete), 0);
+  assert.equal(occupiedEnd(complete), 675);
+  assert.equal(complete.duration, 30);
+});
+
+test("Yuna overrides hallucinated 14:15 with the actual created interview slot 15:45", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => JSON.stringify({
+    reply: "ยูนะเพิ่มฝึกสัมภาษณ์ชาวต่างชาติ 14:15–14:45 เรียบร้อยแล้วค่ะ",
+    actions: [{
+      type: "add", name: "ฝึกสอบสัมภาษณ์ชาวต่างชาติ",
+      date: future, start: 945, duration: 30,
+    }],
+  });
+  const response = await p.chat({
+    ...dto, date: future,
+    requestId: "interview-authoritative-receipt",
+    message: "อยากเพิ่มการฝึกสอบสัมภาษณ์ชาวต่างชาติ ช่วยจัดเวลาที่ว่างให้หน่อย",
+    autoApply: true,
+  });
+  assert.equal(response.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(response.message.content, /15:45–16:15/);
+  assert.doesNotMatch(response.message.content, /14:15/);
+  assert.equal(response.message.appliedChanges?.[0]?.start, 945);
+  assert.equal((await p.get()).sessions[0].start, 945);
+  assert.equal((await p.get()).sessions[0].duration, 30);
+});
+
+test("Yuna's pending proposal uses the actual slots, not the model's invented prose", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => JSON.stringify({
+    reply: "จัดเวลา 14:15–14:45 และบันทึกให้แล้วค่ะ",
+    actions: [{
+      type: "add", name: "ฝึกสอบสัมภาษณ์ชาวต่างชาติ",
+      date: future, start: 945, duration: 30,
+    }],
+  });
+  const response = await p.chat({
+    ...dto, date: future,
+    requestId: "interview-authoritative-proposal",
+    message: "อยากเพิ่มการฝึกสอบสัมภาษณ์ชาวต่างชาติ ช่วยจัดเวลาที่ว่างให้หน่อย",
+    autoApply: false,
+  });
+  assert.match(response.message.outcome ?? "", /รอยืนยัน/);
+  assert.match(response.message.content, /15:45–16:15/);
+  assert.doesNotMatch(response.message.content, /บันทึกให้แล้ว/);
+  assert.equal(response.proposal?.sessions[0]?.start, 945);
+  assert.equal((await p.get()).sessions.length, 0);
+});
+
+test("same booked slot completed inside scheduled window still releases only the unused tail", () => {
+  const task = {
+    id: "assignment", date: "2026-10-26", name: "Assignment",
+    start: 915, duration: 120, fixed: false, status: "planned" as const,
+    reminder: 10,
+  };
+  const done = finishSessionNow(task, Date.parse("2026-10-26T16:44:00+07:00"));
+  assert.equal(completedBeforeScheduledStart(done), false);
+  assert.equal(releasedEarlyMinutes(done), 31);
+  assert.equal(occupiedEnd(done), 1004);
 });
