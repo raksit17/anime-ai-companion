@@ -60,3 +60,19 @@ model PlannerStore {
  id String @id
  data Json
 }
+
+/** Immutable session-change journal. Conversation logs are NOT analytics data. */
+model PlannerActivityEvent {
+ id String @id @default(uuid())
+ plannerId String @default("local")
+ sessionId String
+ activityKey String
+ category String
+ kind String
+ occurredAt DateTime @default(now())
+ before Json?
+ after Json?
+ @@index([plannerId, occurredAt])
+ @@index([plannerId, activityKey, occurredAt])
+ @@index([plannerId, sessionId])
+}
