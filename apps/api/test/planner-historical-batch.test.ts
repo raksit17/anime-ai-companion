@@ -82,7 +82,7 @@ test("all-or-nothing when explicit durations cannot fit; never silently shorten 
   const now = Date.parse("2026-10-26T23:05:00+07:00");
   const state = initial();
   state.settings.maxMinutes = 60;
-  const request = parseHistoricalBatch("พรุ่งนี้จัดเวลา อ่านข่าว BBC 60 นาที,ติว TOEIC 60 นาที", today(now), now)!;
+  const request = parseHistoricalBatch("พรุ่งนี้จัดเวลาที่ อ่านข่าว BBC 60 นาที,ติว TOEIC 60 นาที", today(now), now)!;
   const result = planHistoricalBatch(state, request, now);
   assert.equal(result.commands.length, 0);
   assert.equal(result.booked.length, 0);
