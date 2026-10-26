@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { fits, Session, State, timestamp, today } from "./engine";
+import { fits, sessionActivityIdentity, Session, State, timestamp, today } from "./engine";
+import { computeHabitProfile } from "./history";
 export const addDays = (date: string, n: number) =>
   new Date(Date.parse(date) + n * 86400000).toISOString().slice(0, 10);
 export function weeklyReview(state: State, now = Date.now()) {
@@ -8,15 +9,18 @@ export function weeklyReview(state: State, now = Date.now()) {
   const weekKey = addDays(current, -((weekday + 6) % 7));
   const from = addDays(weekKey, -7),
     to = addDays(weekKey, -1);
-  const rows = state.sessions.filter(
-    (s) => s.goalId && s.date >= from && s.date <= to,
-  );
-  const goals = [...new Set(rows.map((s) => s.goalId!))].map((id) => {
-    const entries = rows.filter((s) => s.goalId === id),
+  // Include one-off chat-created tasks and fixed appointments; group by
+  // activity rather than the per-session temporary daily:<UUID> goalId.
+  const rows = state.sessions.filter((s) => s.date >= from && s.date <= to);
+  const goals = [...new Set(rows.map((s) =>
+    sessionActivityIdentity(s).activityKey))].map((id) => {
+    const entries = rows.filter((s) =>
+      sessionActivityIdentity(s).activityKey === id),
       done = entries.filter((s) => s.status === "done").length;
     return {
       id,
-      name: state.goals.find((g) => g.id === id)?.name ?? entries[0].name,
+      name: entries[0].name,
+      category: sessionActivityIdentity(entries[0]).category,
       total: entries.length,
       done,
       skipped: entries.filter((s) => s.status === "skipped").length,
@@ -54,6 +58,7 @@ export function adapt(
 ) {
   const state = structuredClone(input),
     review = weeklyReview(input, now),
+    longTerm = computeHabitProfile(input.sessions, [], 90, now),
     until = addDays(from, horizon - 1);
   const reasons: string[] = [],
     unscheduled: string[] = [];
@@ -95,7 +100,12 @@ export function adapt(
   );
   for (const old of candidates) {
     const goal = state.goals.find((g) => g.id === old.goalId);
-    const reduce = review.goals.find((g) => g.id === old.goalId)?.reduce;
+    const profile = longTerm.activities.find((g) =>
+      g.activityKey === sessionActivityIdentity(old).activityKey);
+    // Adaptive suggestions use 90-day evidence, not a random daily goal ID.
+    const decided = profile ? profile.done + profile.skipped + profile.missed : 0;
+    const reduce = !!profile && decided >= 3 &&
+      profile.completionRate !== null && profile.completionRate < 0.6;
     // Base on goal duration so repeated previews/confirmations never compound reductions.
     const baseline = Math.min(old.duration, goal?.duration ?? old.duration);
     const target =
@@ -171,6 +181,9 @@ export function adapt(
     unscheduled,
     reasons,
     review,
+    habitProfile: { from: longTerm.from, to: longTerm.to,
+      evidenceActivities: longTerm.activities.length,
+      recommendations: longTerm.recommendations },
     breakMinutes,
   };
 }
