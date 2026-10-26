@@ -62,6 +62,12 @@ export function parseHistoricalBatch(
     .map((x) => x.trim().replace(/[.。]+$/u, "").trim())
     .filter(Boolean);
   if (parts.length < 2 || parts.length > 12) return undefined;
+  // Preserve existing preview-only flow for ordinary batches of 2–6 tasks.
+  // The special historical booking flow only handles 7+ tasks or an
+  // unambiguous request to use the older calendar as scheduling evidence.
+  if (parts.length <= 6 &&
+      !/(?:จัดเวลา(?:ที่|ของ)|จากแผนเก่า|อิง(?:จาก)?\s*(?:แผน|ประวัติ)|ตามแผนเก่า)/u.test(source))
+    return undefined;
   const names: string[] = [];
   const durations: (number | undefined)[] = [];
   for (const part of parts) {
