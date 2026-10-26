@@ -114,8 +114,25 @@ export function occupiedEnd(session: Session): number {
     return scheduledEnd;
   const finishedAt = Date.parse(session.completedAt);
   if (!Number.isFinite(finishedAt)) return scheduledEnd;
+  // A task marked done BEFORE its booked start happened outside the planned
+  // slot. We do not know when it actually started, and cannot treat the
+  // entire booking as 100% "finished early" or recovered capacity.
+  // Keep the booking reserved until the user explicitly cancels/moves it.
+  if (finishedAt < timestamp(session.date, session.start))
+    return scheduledEnd;
   const finishedOnDay = Math.ceil((finishedAt - timestamp(session.date, 0)) / 60000);
-  return Math.max(session.start, Math.min(scheduledEnd, finishedOnDay));
+  return Math.min(scheduledEnd, finishedOnDay);
+}
+
+/** Different from completing a started booking early: a completion
+ * timestamp earlier than the SCHEDULED start provides no measured work time
+ * and no reliable reclaimable capacity.
+ */
+export function completedBeforeScheduledStart(session: Session): boolean {
+  if (session.status !== "done" || !session.completedAt) return false;
+  const actual = Date.parse(session.completedAt);
+  return Number.isFinite(actual) &&
+    actual < timestamp(session.date, session.start);
 }
 
 export function releasedEarlyMinutes(session: Session): number {

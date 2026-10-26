@@ -138,8 +138,21 @@ function earlyReleasedMinutes(session: Session) {
   const startOfDay = Date.parse(`${session.date}T00:00:00+07:00`);
   const completedMinutes = Math.ceil((actual - startOfDay) / 60000);
   const plannedEnd = session.start + session.duration;
-  return Math.max(0, plannedEnd -
-    Math.max(session.start, Math.min(plannedEnd, completedMinutes)));
+  // Finishing before the booking starts is off-schedule, not proof that
+  // the entire planned duration was spent or recovered.
+  if (actual < startOfDay + session.start * 60000) return 0;
+  return Math.max(0, plannedEnd - Math.min(plannedEnd, completedMinutes));
+}
+function completedOutsideSchedule(session: Session) {
+  return session.status === "done" && !!session.completedAt &&
+    Date.parse(session.completedAt) <
+      Date.parse(`${session.date}T00:00:00+07:00`) + session.start * 60000;
+}
+function completedAfterSchedule(session: Session) {
+  return session.status === "done" && !!session.completedAt &&
+    Date.parse(session.completedAt) >
+      Date.parse(`${session.date}T00:00:00+07:00`) +
+      (session.start + session.duration) * 60000;
 }
 
 const daySessions = computed(() =>
@@ -928,8 +941,14 @@ watch(advanced, (value) => {
               </p>
               <p v-if="s.status === 'done' && actualFinishedClock(s)" class="actual-completion">
                 <span>เสร็จจริง {{ actualFinishedClock(s) }}</span>
-                <span v-if="earlyReleasedMinutes(s) > 0">
-                  · เร็วกว่ากำหนด {{ earlyReleasedMinutes(s) }} นาที
+                <span v-if="completedOutsideSchedule(s)">
+                  · เสร็จก่อนช่วงที่วางแผนไว้ (ไม่ทราบระยะเวลาทำจริงหากไม่กดเริ่ม)
+                </span>
+                <span v-else-if="earlyReleasedMinutes(s) > 0">
+                  · คืนเวลาที่จองไว้ {{ earlyReleasedMinutes(s) }} นาที
+                </span>
+                <span v-else-if="completedAfterSchedule(s)">
+                  · เสร็จหลังเวลาสิ้นสุดตามแผน
                 </span>
                 <span class="planned-time-hint">(เวลาเดิม {{ clock(s.start) }}–{{ clock(s.start + s.duration) }})</span>
               </p>
