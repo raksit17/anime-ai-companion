@@ -70,6 +70,7 @@ import {
   swapDaySessions,
   editDaySessionTime,
   finishSessionNow,
+  completedBeforeScheduledStart,
   startSessionNow,
   classifyActivity,
   actualWorkedMinutes,
@@ -1325,6 +1326,36 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             result = undefined;
           }
         }
+        // An explicit clock in the user's request is a hard constraint,
+        // including when Ollama produced the action. Do not silently shift
+        // a single newly-created task to a different hour.
+        if (result && !timedAdd?.command && output.actions.some((a) => a.type === "add")) {
+          const clocks = [...dto.message.matchAll(/(?<!\d)(\d{1,2}):([0-5]\d)(?!\d)/gu)];
+          const added = result.sessions.filter((next) =>
+            !s.sessions.some((prior) => prior.id === next.id));
+          if (clocks.length === 1 && added.length === 1) {
+            const requestedStart = Number(clocks[0][1]) * 60 + Number(clocks[0][2]);
+            if (requestedStart !== added[0].start) {
+              const clock = (minute: number) =>
+                String(Math.floor(minute / 60)).padStart(2, "0") + ":" +
+                String(minute % 60).padStart(2, "0");
+              blocked = {
+                reason: "ขอเวลา " + clock(requestedStart) +
+                  " แต่ระบบเสนอ " + clock(added[0].start) +
+                  " จึงยังไม่บันทึกเวลาอื่นแทนโดยไม่ได้รับอนุญาต",
+                followUps: [{
+                  label: "หาช่วงเวลาอื่น",
+                  prompt: "เสนอเวลาที่ว่างสำหรับ " + added[0].name +
+                    " โดยยังไม่เปลี่ยนตาราง และให้ฉันเลือกก่อน",
+                }],
+              };
+              output = { reply: "ยูนะตรวจตารางแล้วค่ะ " + blocked.reason +
+                " นะคะ อยากดูตัวเลือกเวลาอื่นไหมคะ?", actions: [] };
+              outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
+              result = undefined;
+            }
+          }
+        }
         if (result) {
           // A verified change receipt is generated from actual persisted-state
           // differences, never from the model's claimed actions or prose.
@@ -1375,11 +1406,17 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                   })
                 : "ตอนนี้";
               const freed = releasedEarlyMinutes(confirmed);
+              const outside = completedBeforeScheduledStart(confirmed);
               output.reply = dto.autoApply
                 ? "ยูนะบันทึกว่า " + confirmed.name + " เสร็จจริงเวลา " +
                     actual + " แล้วค่ะ " +
-                    (freed ? "เสร็จก่อนกำหนดและคืนช่วงเวลาที่จองไว้ " + freed + " นาที (ยังต้องเว้นพักก่อนงานถัดไป)" :
-                      "ไม่เหลือเวลาที่จองไว้ให้คืนแล้ว") +
+                    (outside
+                      ? "งานนี้เสร็จก่อนช่วงเวลาที่วางแผนไว้ จึงไม่ถือว่าใช้เวลาทำจริง " +
+                        confirmed.duration + " นาที และยังไม่คำนวณเวลาคืนจากแผนโดยอัตโนมัติ"
+                      : freed
+                        ? "คืนช่วงเวลาที่จองไว้ " + freed +
+                          " นาที (ยังต้องเว้นพักก่อนงานถัดไป)"
+                        : "ไม่เหลือเวลาที่จองไว้ให้คืนแล้ว") +
                     " โดยยังไม่ย้ายกิจกรรมอื่นนะคะ"
                 : "ยูนะเตรียมบันทึกว่า " + confirmed.name +
                     " เสร็จเวลา " + actual +
@@ -1418,6 +1455,34 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                 ? `ได้เลยค่ะ ฉันเพิ่ม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ให้แล้วนะ`
                 : `ฉันเตรียม ${added.name} วันที่ ${added.date} เวลา ${clock(added.start)}–${clock(added.start + added.duration)} ไว้ให้ตรวจแล้วค่ะ ยังไม่ได้บันทึกจนกว่าเธอจะยืนยันนะ`;
             }
+          }
+          // Never repeat a model-authored "saved at 14:15" when the actual
+          // planned row says 15:45. For every non-specialized action, replace
+          // the prose with a receipt derived from the validated state diff.
+          // This also covers LLM-arranged bookings without a user-supplied
+          // exact clock, where placement is allowed but must be transparent.
+          if (changedItems.length &&
+              !editedItem && !resizedItem && !exactRequest &&
+              !finishIntent?.command) {
+            const fmt = (minutes: number) =>
+              String(Math.floor(minutes / 60)).padStart(2, "0") + ":" +
+              String(minutes % 60).padStart(2, "0");
+            const descriptions = changedItems.map((item) => {
+              const previous = oldById.get(item.id);
+              const kind = !previous ? "เพิ่ม" :
+                item.status === "done" ? "ทำเสร็จ" :
+                item.status === "skipped" ? "ข้าม" : "ปรับ";
+              return kind + " " + item.name + " · " + item.date + " " +
+                fmt(item.start) + "–" + fmt(item.start + item.duration) +
+                " (" + item.duration + " นาที)";
+            });
+            output.reply = dto.autoApply && !requireBatchApproval
+              ? "เรียบร้อยค่ะ ยูนะบันทึกตามตารางจริงดังนี้นะคะ\n" +
+                  descriptions.map((item) => "• " + item).join("\n") +
+                  "\nยึดเวลาที่บันทึกจริง ไม่ใช่เวลาในคำตอบก่อนหน้าค่ะ"
+              : "ยูนะจัดตัวอย่างจากตารางที่ตรวจสอบแล้วค่ะ ยังไม่ได้บันทึกนะคะ\n" +
+                  descriptions.map((item) => "• " + item).join("\n") +
+                  "\nลองตรวจเวลาให้ตรงใจก่อนกดยืนยันนะคะ";
           }
           if (dto.autoApply && !requireBatchApproval) {
             if (changedItems.length) {
