@@ -64,13 +64,16 @@ type Proposal = {
   reasons?: string[];
   breakMinutes?: number;
   source?: "habits";
+  mode?: "recent-trial" | "habit";
+  analysisFrom?: string;
+  analysisTo?: string;
   suggestions?: Array<{
     sessionId: string;
     name: string;
     evidenceCount: number;
     preferredStart: number;
     plannedStart: number;
-    confidence: "high" | "medium";
+    confidence: "high" | "medium" | "low";
     reason: string;
   }>;
 };
@@ -186,7 +189,7 @@ async function suggestHabitPlan(targetDate: string) {
   await run(async () => {
     date.value = targetDate;
     proposal.value = await api<Proposal>("/planner/recommendations/preview", "POST", {
-      date: targetDate, energy: energy.value,
+      date: targetDate, energy: energy.value, days: daysWindow.value,
     });
   });
 }
@@ -296,6 +299,7 @@ async function checkNotifications() {
               @change="run(async () => {
                 habits = await api('/planner/habits?days=' + daysWindow);
               })">
+              <option :value="4">4 วัน (ทดลอง)</option>
               <option :value="7">7 วัน</option>
               <option :value="30">30 วัน</option>
               <option :value="90">90 วัน</option>
@@ -305,6 +309,7 @@ async function checkNotifications() {
           </label>
         </div>
         <template v-if="habits">
+          <p class="muted small" v-if="daysWindow === 4">ทดลองจาก 4 วันก่อนหน้า · ข้อมูลน้อยยังไม่ใช่นิสัยประจำ</p>
           <div class="habit-stats">
             <p><strong>{{ habits.activityCount }}</strong><small>กิจกรรมในประวัติ</small></p>
             <p><strong>{{ habits.completed }}</strong><small>ทำเสร็จ</small></p>
@@ -341,7 +346,7 @@ async function checkNotifications() {
               </template>
             </p>
             <p class="muted small" v-if="!h.recurringPattern">
-              ข้อมูลสำเร็จยังไม่ถึง 3 ครั้ง จึงยังไม่สรุปว่าเป็นนิสัยประจำ
+              ยังไม่พบการทำสำเร็จซ้ำหลายสัปดาห์ จึงยังไม่สรุปว่าเป็นนิสัยประจำ
             </p>
           </article>
           <h3>ข้อเสนอจากประวัติ</h3>
@@ -455,6 +460,7 @@ async function checkNotifications() {
       <div v-if="proposal" class="planner-card">
         <h3>ตัวอย่างก่อนบันทึก</h3>
         <template v-if="proposal.source === 'habits'">
+          <p v-if="proposal.mode === 'recent-trial'" class="muted small">โหมดทดลอง 4 วัน: เป็นแผนตัวอย่าง ไม่ใช่นิสัยที่พิสูจน์แล้ว</p>
           <p class="muted small">
             ระบบตรวจประวัติการทำจริง เวลาที่เคยสำเร็จ และข้อจำกัดตาราง
             ก่อนเสนอสล็อตใหม่ ไม่มีการเปลี่ยนแผนอัตโนมัติ
