@@ -13,6 +13,7 @@ import {
   parseGroupShiftPlan,
   parseScheduledAdd,
   completeScheduledAdd,
+  replaceRejectedAddStart,
   parseDurationEdit,
   parseConversationalDurationEdit,
   validateOllamaDurationEdit,
@@ -2984,4 +2985,139 @@ test("past 16:40 review coding request cannot be inserted retroactively", () => 
   const command = parseScheduledAdd(phrase, day, now)?.command;
   assert.equal(command?.start, 1000);
   assert.throws(() => executeCommands(initial(), [command!], day, now), /16:40–16:55/);
+});
+
+test("replace 19:00 with 19:45 after rejected YouTube English add, preserving name and duration", async () => {
+  const day = runtimeTomorrow;
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions.push({
+    id: "busy", name: "โทรศัพท์", date: day, start: 1140,
+    duration: 30, status: "planned", fixed: true, reminder: 10,
+  });
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => {
+    throw new Error("conflict wording may fall back to deterministic text");
+  };
+  const first = await p.chat({
+    ...dto, date: today(), requestId: "english-youtube-1900-refused",
+    message: "พรุ่งนี้ เพิ่มงาน ฝึกภาษาอังกฤษจากการดูสตรีม youtube เวลา 19:00–19:30",
+    autoApply: true,
+  });
+  assert.match(first.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal(first.message.pendingAdd?.name, "ฝึกภาษาอังกฤษจากการดูสตรีม youtube");
+  assert.equal(first.message.pendingAdd?.duration, 30);
+  assert.equal((await p.get()).sessions.length, 1);
+  const second = await p.chat({
+    ...dto, date: today(), requestId: "english-youtube-1945-alternative",
+    message: "เริ่ม 19:45 แทน", autoApply: true,
+  });
+  assert.equal(second.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(second.message.content, /19:45–20:15/);
+  assert.equal(second.message.appliedChanges?.[0]?.name,
+    "ฝึกภาษาอังกฤษจากการดูสตรีม youtube");
+  assert.equal(second.message.appliedChanges?.[0]?.start, 1185);
+  assert.equal(second.message.appliedChanges?.[0]?.duration, 30);
+  const saved = await p.get();
+  assert.equal(saved.sessions.length, 2);
+  assert.equal(saved.sessions.find((s: any) => s.id === "busy")?.start, 1140);
+  const retry = await p.chat({
+    ...dto, date: today(), requestId: "english-youtube-1945-alternative",
+    message: "เริ่ม 19:45 แทน", autoApply: true,
+  });
+  assert.equal(retry.message.id, second.message.id);
+  assert.equal((await p.get()).sessions.length, 2);
+});
+
+test("legacy chat with intermediary '30 นาที' reconstructs rejected add then shifts only the start", () => {
+  const day = "2026-10-26";
+  const at1941 = Date.parse(day + "T19:41:00+07:00");
+  const history = [
+    { role: "user", content: "วันนี้ เพิ่มกิจกรรม ฝึกภาษาอังกฤษจากการดูสตรีม youtube เวลา 19:00" },
+    { role: "assistant", content: "อยากทำกี่นาที?", outcome: "ยังไม่ได้เปลี่ยนตาราง · นานกี่นาที" },
+    { role: "user", content: "30 นาที" },
+    { role: "assistant", content: "ช่วง 19:00–19:30 เพิ่มไม่ได้",
+      outcome: "ยังไม่ได้เปลี่ยนตาราง · ชนกิจกรรมเดิม" },
+  ];
+  assert.deepEqual(replaceRejectedAddStart(
+    history, "เริ่ม 19:45 แทน", day, at1941,
+  )?.command, {
+    type: "add", name: "ฝึกภาษาอังกฤษจากการดูสตรีม youtube",
+    date: day, start: 1185, duration: 30, fixed: false,
+  });
+  assert.equal(replaceRejectedAddStart(
+    history, "เริ่ม 25:00 แทน", day, at1941,
+  )?.command, undefined);
+  assert.match(replaceRejectedAddStart(
+    history, "เริ่ม 25:00 แทน", day, at1941,
+  )?.reason ?? "", /ไม่ถูกต้อง/);
+  assert.equal(replaceRejectedAddStart(
+    history, "เริ่ม 19:45 แทน ขออีกงาน", day, at1941,
+  ), undefined);
+});
+
+test("a second failed replacement can be followed by another time, without changing the timetable", async () => {
+  const state = initial();
+  state.settings.maxMinutes = 720;
+  state.sessions.push(
+    { id: "busy-original", name: "งานหนึ่ง", date: runtimeTomorrow,
+      start: 1140, duration: 30, fixed: true, status: "planned", reminder: 10 },
+    { id: "busy-alternative", name: "งานสอง", date: runtimeTomorrow,
+      start: 1185, duration: 30, fixed: true, status: "planned", reminder: 10 },
+  );
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => { throw new Error("must not invent changed calendar"); };
+  const initialReply = await p.chat({
+    ...dto, date: today(), requestId: "english-refuse-1900",
+    message: "พรุ่งนี้ เพิ่มงาน ฝึกภาษาอังกฤษจากการดูสตรีม youtube เวลา 19:00–19:30",
+  });
+  assert.match(initialReply.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  const denied = await p.chat({
+    ...dto, date: today(), requestId: "english-refuse-1945",
+    message: "เริ่ม 19:45 แทน",
+  });
+  assert.match(denied.message.outcome ?? "", /ยังไม่ได้เปลี่ยนตาราง/);
+  assert.equal(denied.message.pendingAdd?.start, 1185);
+  assert.equal((await p.get()).sessions.length, 2);
+  const moved = await p.chat({
+    ...dto, date: today(), requestId: "english-accept-2030",
+    message: "เริ่ม 20:30 แทน",
+  });
+  assert.equal(moved.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(moved.message.appliedChanges?.[0]?.start, 1230);
+  assert.equal((await p.get()).sessions.length, 3);
+});
+
+test("a clock-only follow-up without a rejected add never creates an invented task", () => {
+  const todayDate = "2026-10-26";
+  const at1941 = Date.parse(todayDate + "T19:41:00+07:00");
+  assert.equal(replaceRejectedAddStart([], "เริ่ม 19:45 แทน", todayDate, at1941),
+    undefined);
+  const unrelated = [
+    { role: "user", content: "วันนี้เหนื่อย" },
+    { role: "assistant", content: "เวลามีจำกัด", outcome: "ยังไม่ได้เปลี่ยนตาราง" },
+  ];
+  assert.match(replaceRejectedAddStart(unrelated,
+    "เริ่ม 19:45 แทน", todayDate, at1941)?.reason ?? "", /ยังไม่พบคำขอ/);
+  const notRejected = [
+    { role: "user", content: "วันนี้ เพิ่มงาน ฝึกภาษาอังกฤษ เวลา 19:00–19:30" },
+    { role: "assistant", content: "ยืนยันการเพิ่มแล้ว", outcome: "บันทึกตารางแล้ว" },
+  ];
+  assert.equal(replaceRejectedAddStart(notRejected, "เริ่ม 19:45 แทน",
+    todayDate, at1941), undefined);
+});
+
+test("replacement time already elapsed is rejected and never added retroactively", () => {
+  const date = "2026-10-26";
+  const at2025 = Date.parse(date + "T20:25:00+07:00");
+  const history = [{
+    role: "assistant", content: "19:00 ไม่ว่าง",
+    outcome: "ยังไม่ได้เปลี่ยนตาราง",
+    pendingAdd: { type: "add" as const, name: "ฝึกภาษาอังกฤษจาก youtube",
+      date, start: 1140, duration: 30, fixed: false },
+  }];
+  const intent = replaceRejectedAddStart(history, "เริ่ม 19:45 แทน", date, at2025);
+  assert.equal(intent?.command?.duration, 30);
+  assert.throws(() => executeCommands(initial(), [intent!.command!], date, at2025),
+    /19:45–20:15/);
 });
