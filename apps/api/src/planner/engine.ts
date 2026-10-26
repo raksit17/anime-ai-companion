@@ -1,4 +1,41 @@
 import { randomUUID } from "node:crypto";
+export type ActivityCategory =
+  "exercise" | "study" | "work" | "chores" | "wellbeing" | "other";
+
+/** Stable across ad-hoc chat sessions, even when their goalId is random.
+ * This key is NOT a user ID and should never identify the user.
+ */
+export function normalizeActivityName(name: string): string {
+  return name.normalize("NFKC").toLocaleLowerCase("th-TH")
+    .replace(/^(?:งาน|กิจกรรม)\s*/u, "")
+    .replace(/[\p{P}\p{S}\s]+/gu, " ").trim();
+}
+export function classifyActivity(name: string): ActivityCategory {
+  const n = normalizeActivityName(name);
+  if (/ออกกำลังกาย|ออกกำลัง|fitness|workout|วิ่ง|โยคะ/u.test(n)) return "exercise";
+  if (/ทำความสะอาด|ล้างจาน|ซักผ้า|กวาด|จัดห้อง|เก็บห้อง/u.test(n)) return "chores";
+  if (/นอน|พักผ่อน|สมาธิ|meditat/u.test(n)) return "wellbeing";
+  if (/assignment|playtorium|หางาน|สมัครงาน|resume|project|โปรเจค|ทำงาน/u.test(n)) return "work";
+  if (/เรียน|ฝึก|ติว|ศึกษา|อ่านข่าว|ภาษาอังกฤษ|coding|code|devops|toeic|bbc/u.test(n)) return "study";
+  return "other";
+}
+export function activityKeyFor(name: string): string {
+  const n = normalizeActivityName(name)
+    .replace(/\b(?:read|watch)\b/gu, "")
+    .replace(/\s+/gu, " ").trim();
+  // Group common title variations while leaving other distinct tasks alone.
+  const alias = /^(?:ออกกำลัง(?:กาย)?|workout)$/u.test(n) ? "exercise" :
+    /^(?:อ่านข่าว\s*bbc|bbc\s*(?:news|ข่าว)|อ่านข่าวจาก\s*bbc)$/u.test(n) ? "bbc-news" :
+    /^(?:ทำความสะอาดห้อง|เก็บห้อง|จัดห้อง)$/u.test(n) ? "room-cleaning" :
+    n;
+  return classifyActivity(name) + ":" + (alias || "unnamed");
+}
+export function sessionActivityIdentity(session: Session) {
+  return {
+    activityKey: session.activityKey ?? activityKeyFor(session.name),
+    category: session.category ?? classifyActivity(session.name),
+  };
+}
 export type Goal = {
   id: string;
   name: string;
@@ -14,6 +51,9 @@ export type Session = {
   id: string;
   goalId?: string;
   name: string;
+  /** Identity for historical grouping; independent of goalId/session ID. */
+  activityKey?: string;
+  category?: ActivityCategory;
   date: string;
   start: number;
   duration: number;
@@ -24,6 +64,8 @@ export type Session = {
   note?: string;
   /** ISO timestamp of actual confirmation. The original booked duration stays intact. */
   completedAt?: string;
+  /** Actual start is recorded only when explicitly started, never guessed. */
+  actualStartedAt?: string;
 };
 export type State = {
   goals: Goal[];
@@ -86,10 +128,30 @@ export function occupiedMinutes(session: Session): number {
   return Math.max(0, occupiedEnd(session) - session.start);
 }
 
+export function startSessionNow(session: Session, now = Date.now()): Session {
+  if (session.status !== "planned" || session.actualStartedAt)
+    throw new Error("เริ่มได้เฉพาะกิจกรรมที่ยังรอทำและยังไม่ได้กดเริ่ม");
+  if (session.date !== today(now))
+    throw new Error("บันทึกเวลาเริ่มจริงได้เฉพาะกิจกรรมวันนี้");
+  return {
+    ...session, ...sessionActivityIdentity(session),
+    actualStartedAt: new Date(now).toISOString(),
+  };
+}
+
+export function actualWorkedMinutes(session: Session): number | null {
+  if (!session.actualStartedAt || !session.completedAt) return null;
+  const start = Date.parse(session.actualStartedAt);
+  const end = Date.parse(session.completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start)
+    return null;
+  return Math.round((end - start) / 60000);
+}
+
 export function finishSessionNow(session: Session, now = Date.now()): Session {
   if (session.status !== "planned")
     throw new Error("กิจกรรมนี้บันทึกผลแล้ว");
-  return { ...session, status: "done", completedAt: new Date(now).toISOString() };
+  return { ...session, ...sessionActivityIdentity(session), status: "done", completedAt: new Date(now).toISOString() };
 }
 
 export function fits(state: State, session: Session, now: number) {
