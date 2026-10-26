@@ -2881,3 +2881,102 @@ test("same booked slot completed inside scheduled window still releases only the
   assert.equal(releasedEarlyMinutes(done), 31);
   assert.equal(occupiedEnd(done), 1004);
 });
+
+test("new review coding 16:40 with นาน/ประมาณ 15 นาที is an add, not missing-task edit", () => {
+  const atSixteen = Date.parse("2026-10-26T16:20:00+07:00");
+  const day = "2026-10-26";
+  const state = initial();
+  for (const phrase of [
+    "ฝึก review coding ช่วง 16:40 ประมาณ 15 นาที",
+    "ฝึก review coding ช่วง 16:40 นาน 15 นาที",
+    "ฝึก review coding ช่วง 16:40 นานประมาณ 15 นาที",
+    "ฝึก review coding ช่วง 16:40 ใช้เวลาประมาณ 15 นาที",
+  ]) {
+    assert.equal(parseTimeDurationEdit(state, day, phrase, atSixteen), undefined, phrase);
+    assert.deepEqual(parseScheduledAdd(phrase, day, atSixteen)?.command, {
+      type: "add", name: "ฝึก review coding", date: day,
+      start: 1000, duration: 15, fixed: false,
+    }, phrase);
+  }
+  const planned = executeCommands(state, [
+    parseScheduledAdd("ฝึก review coding ช่วง 16:40 นาน 15 นาที", day, atSixteen)!.command!,
+  ], day, atSixteen);
+  assert.equal(planned.sessions.length, 1);
+  assert.equal(planned.sessions[0].start, 1000);
+  assert.equal(planned.sessions[0].duration, 15);
+  assert.equal(state.sessions.length, 0);
+});
+
+test("if a review coding slot exists, combined time+duration request edits it, not a duplicate add", () => {
+  const date = "2026-10-26";
+  const now = Date.parse("2026-10-26T16:20:00+07:00");
+  const state = initial();
+  state.sessions.push({
+    id: "review", date, name: "ฝึก review coding",
+    start: 1020, duration: 30, status: "planned",
+    fixed: false, reminder: 10,
+  });
+  assert.deepEqual(
+    parseTimeDurationEdit(state, date, "ฝึก review coding ช่วง 16:40 นาน 15 นาที", now)?.command,
+    { type: "edit", id: "review", date, start: 1000, duration: 15 },
+  );
+  assert.match(
+    parseTimeDurationEdit(initial(), date,
+      "เลื่อน ฝึก review coding ช่วง 16:40 นาน 15 นาที", now)?.reason ?? "",
+    /ไม่พบกิจกรรม/,
+  );
+});
+
+test("Yuna persists one newly created review coding session and cites actual 16:40–16:55", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const { p, ai } = fixture(initial());
+  ai.plannerCompletion = async () => { throw new Error("this clear exact-time add must not use AI"); };
+  const request = {
+    ...dto,
+    date, requestId: "review-coding-new-1640",
+    message: "ฝึก review coding ช่วง 16:40 นาน 15 นาที",
+    autoApply: true,
+  };
+  const reply = await p.chat(request);
+  assert.equal(reply.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(reply.message.content, /16:40–16:55/);
+  assert.equal(reply.message.appliedChanges?.length, 1);
+  assert.deepEqual({
+    kind: reply.message.appliedChanges?.[0]?.kind,
+    name: reply.message.appliedChanges?.[0]?.name,
+    date: reply.message.appliedChanges?.[0]?.date,
+    start: reply.message.appliedChanges?.[0]?.start,
+    duration: reply.message.appliedChanges?.[0]?.duration,
+  }, {
+    kind: "created", name: "ฝึก review coding",
+    date, start: 1000, duration: 15,
+  });
+  assert.equal((await p.get()).sessions.length, 1);
+  const retry = await p.chat(request);
+  assert.equal(retry.message.id, reply.message.id);
+  assert.equal((await p.get()).sessions.length, 1);
+});
+
+test("review coding first prompt ประมาณ 15 นาที does not ask 30/60-minute clarification", async () => {
+  const date = new Date(Date.parse(today()) + 86400000).toISOString().slice(0, 10);
+  const { p, ai } = fixture(initial());
+  ai.plannerCompletion = async () => { throw new Error("clear 15-minute intent should be deterministic"); };
+  const reply = await p.chat({
+    ...dto, date, requestId: "review-coding-approx-1640",
+    message: "ฝึก review coding ช่วง 16:40 ประมาณ 15 นาที",
+    autoApply: true,
+  });
+  assert.equal(reply.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(reply.message.appliedChanges?.[0]?.duration, 15);
+  assert.match(reply.message.content, /16:40–16:55/);
+  assert.ok(!(reply.message.followUps ?? []).some((x: any) => /30 นาที|60 นาที/.test(x.label)));
+});
+
+test("past 16:40 review coding request cannot be inserted retroactively", () => {
+  const day = "2026-10-26";
+  const now = Date.parse("2026-10-26T16:57:00+07:00");
+  const phrase = "ฝึก review coding ช่วง 16:40 นาน 15 นาที";
+  const command = parseScheduledAdd(phrase, day, now)?.command;
+  assert.equal(command?.start, 1000);
+  assert.throws(() => executeCommands(initial(), [command!], day, now), /16:40–16:55/);
+});
