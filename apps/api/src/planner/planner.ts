@@ -150,9 +150,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       if (mutate) {
         for (const session of state.sessions) {
           // Backfill old JSON records on the next legitimate write.
-          const old = before.find((s) => s.id === session.id);
-          if (!session.activityKey || !session.category ||
-              (old && old.name !== session.name)) {
+          if (!session.activityKey || !session.category) {
             Object.assign(session, sessionActivityIdentity({
               ...session, activityKey: undefined, category: undefined,
             }));
@@ -634,11 +632,14 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             ? snapshot.proposal
             : undefined,
       };
-    const memories = await this.db.memory.findMany({
-      where: { characterId: dto.characterId },
-      orderBy: { importance: "desc" },
-      take: 12,
-    });
+    const [memories, habitProfile] = await Promise.all([
+      this.db.memory.findMany({
+        where: { characterId: dto.characterId },
+        orderBy: { importance: "desc" },
+        take: 12,
+      }),
+      this.habits(90),
+    ]);
     const signal = AbortSignal.timeout(120000),
       release = await this.gate.acquire(signal);
     let output: ChatOutput;
@@ -682,6 +683,21 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           goals: snapshot.goals,
           sessions: relevant,
           weekly: weeklyReview(snapshot),
+          habitProfile: {
+            from: habitProfile.from, to: habitProfile.to,
+            activityCount: habitProfile.activityCount,
+            missingActualStarts: habitProfile.missingActualStarts,
+            clusters: habitProfile.activities.slice(0, 8).map((activity) => ({
+              activityKey: activity.activityKey,
+              name: activity.name,
+              total: activity.total, done: activity.done,
+              cancelled: activity.cancelled, missed: activity.missed,
+              observedActualSamples: activity.actualSamples,
+              averageActualMinutes: activity.averageActualMinutes,
+              preferredStart: activity.recurringPattern ? activity.preferredStart : null,
+            })),
+            recommendations: habitProfile.recommendations,
+          },
         },
         dto.message,
       );
@@ -1433,7 +1449,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
     }, true);
   }
   async advice(dto: AdviceDto) {
-    const state = await this.get();
+    const [state, habitProfile] = await Promise.all([this.get(), this.habits(90)]);
     const signal = AbortSignal.timeout(120000);
     const release = await this.gate.acquire(signal);
     try {
@@ -1457,6 +1473,12 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
                 .slice(0, 100),
               progress: state.progress,
               weeklyReview: state.weekly,
+              habitProfile: {
+                from: habitProfile.from, to: habitProfile.to,
+                missingActualStarts: habitProfile.missingActualStarts,
+                activities: habitProfile.activities.slice(0, 8),
+                recommendations: habitProfile.recommendations,
+              },
             }),
           },
         ],
