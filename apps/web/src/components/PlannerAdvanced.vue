@@ -62,6 +62,16 @@ type Proposal = {
   unscheduled: string[];
   reasons?: string[];
   breakMinutes?: number;
+  source?: "habits";
+  suggestions?: Array<{
+    sessionId: string;
+    name: string;
+    evidenceCount: number;
+    preferredStart: number;
+    plannedStart: number;
+    confidence: "high" | "medium";
+    reason: string;
+  }>;
 };
 type Weekly = {
   from: string;
@@ -167,6 +177,17 @@ async function run(fn: () => Promise<void>) {
   } finally {
     busy.value = false;
   }
+}
+const bangkokDate = (offsetDays = 0) =>
+  new Date(Date.now() + (7 + offsetDays * 24) * 3600000)
+    .toISOString().slice(0, 10);
+async function suggestHabitPlan(targetDate: string) {
+  await run(async () => {
+    date.value = targetDate;
+    proposal.value = await api<Proposal>("/planner/recommendations/preview", "POST", {
+      date: targetDate, energy: energy.value,
+    });
+  });
 }
 async function saveGoal() {
   await run(async () => {
@@ -376,6 +397,21 @@ async function checkNotifications() {
           <option value="low">น้อย — กิจกรรมใหม่ไม่เกิน 20 นาที</option>
         </select></label
       >
+      <div class="habit-suggestion-actions">
+        <button type="button" class="primary" @click="suggestHabitPlan(bangkokDate())">
+          ✨ แนะนำแผนวันนี้จากประวัติ
+        </button>
+        <button type="button" @click="suggestHabitPlan(bangkokDate(1))">
+          ✨ แนะนำแผนพรุ่งนี้จากประวัติ
+        </button>
+        <button type="button" @click="suggestHabitPlan(date)">
+          แนะนำแผนวันที่เลือก
+        </button>
+      </div>
+      <p class="muted small">
+        เรียนรู้จากกิจกรรมที่ทำสำเร็จซ้ำในหลายสัปดาห์เท่านั้น
+        แผนเป็นตัวอย่าง ไม่บันทึกหรือย้ายงานอื่นจนกดยืนยัน
+      </p>
       <button
         class="primary"
         @click="
@@ -407,6 +443,21 @@ async function checkNotifications() {
       </p>
       <div v-if="proposal" class="planner-card">
         <h3>ตัวอย่างก่อนบันทึก</h3>
+        <template v-if="proposal.source === 'habits'">
+          <p class="muted small">
+            ระบบตรวจประวัติการทำจริง เวลาที่เคยสำเร็จ และข้อจำกัดตาราง
+            ก่อนเสนอสล็อตใหม่ ไม่มีการเปลี่ยนแผนอัตโนมัติ
+          </p>
+          <article v-for="suggestion in proposal.suggestions"
+            :key="suggestion.sessionId" class="habit-cluster">
+            <strong>{{ suggestion.name }}</strong>
+            <p class="muted small">
+              พบทำสำเร็จ {{ suggestion.evidenceCount }} ครั้ง ·
+              ความมั่นใจ {{ suggestion.confidence === 'high' ? 'สูง' : 'ปานกลาง' }}
+            </p>
+            <p class="muted small">{{ suggestion.reason }}</p>
+          </article>
+        </template>
         <p v-if="proposal.breakMinutes">
           เว้นพักอย่างน้อย {{ proposal.breakMinutes }} นาที
         </p>
@@ -430,6 +481,7 @@ async function checkNotifications() {
         <p v-for="u in proposal.unscheduled" :key="u" class="muted">{{ u }}</p>
         <button
           class="primary"
+          :disabled="!preview.length"
           @click="
             run(async () => {
               await api(`/planner/proposals/${proposal!.id}/confirm`, 'POST');
@@ -670,6 +722,7 @@ async function checkNotifications() {
 .planner textarea {
   width: 100%;
 }
+.habit-suggestion-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .habit-range select { max-width: 160px; }
 .habit-stats { display: flex; gap: 10px; flex-wrap: wrap; }
 .habit-stats p { min-width: 105px; padding: 10px; border: 1px solid #738b8555; border-radius: 8px; }
