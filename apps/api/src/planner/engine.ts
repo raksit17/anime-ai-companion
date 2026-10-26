@@ -6,7 +6,7 @@ export type ActivityCategory =
  * This key is NOT a user ID and should never identify the user.
  */
 export function normalizeActivityName(name: string): string {
-  return name.normalize("NFKC").toLocaleLowerCase("th-TH")
+  return name.normalize("NFC").toLocaleLowerCase("th-TH")
     .replace(/^(?:งาน|กิจกรรม)\s*/u, "")
     .replace(/[\p{P}\p{S}\s]+/gu, " ").trim();
 }
