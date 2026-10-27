@@ -12,6 +12,7 @@ type Session = {
   status: string;
   fixed: boolean;
   note?: string;
+  historicalTimeAccuracy?: "exact" | "estimated" | "unknown";
 };
 type Goal = {
   id?: string;
@@ -523,7 +524,8 @@ async function checkNotifications() {
       /></label>
       <article v-for="s in sessions" :key="s.id" class="planner-card">
         <strong
-          >{{ clock(s.start) }}–{{ clock(s.start + s.duration) }}
+          >{{ s.historicalTimeAccuracy === "unknown" ? "ไม่ทราบช่วงเวลา" :
+            clock(s.start) + "–" + clock(s.start + s.duration) }}
           {{ s.name }}</strong
         >
         <p>
@@ -538,6 +540,7 @@ async function checkNotifications() {
                   : "รอทำ"
           }}
         </p>
+        <p v-if="s.historicalTimeAccuracy">↶ บันทึกย้อนหลัง · {{ s.historicalTimeAccuracy === "unknown" ? "ไม่ทราบเวลา" : s.historicalTimeAccuracy === "estimated" ? "เวลาประมาณ" : "เวลาที่ระบุ" }}</p>
         <p v-if="s.note">{{ s.note }}</p>
         <template v-if="s.status === 'planned'"
           ><button @click="mark(s, 'done')">✓ สำเร็จ</button
