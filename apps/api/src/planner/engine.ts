@@ -66,6 +66,10 @@ export type Session = {
   completedAt?: string;
   /** Actual start is recorded only when explicitly started, never guessed. */
   actualStartedAt?: string;
+  /** Manually entered after the work; may have no remembered clock. */
+  historicalTimeAccuracy?: "exact" | "estimated" | "unknown";
+  historicalRequestId?: string;
+  recordedAt?: string;
 };
 export type State = {
   goals: Goal[];
@@ -109,6 +113,7 @@ export function timestamp(date: string, minutes: number) {
  * Old completed records without a timestamp remain backwards compatible.
  */
 export function occupiedEnd(session: Session): number {
+  if (session.historicalTimeAccuracy === "unknown") return session.start;
   const scheduledEnd = session.start + session.duration;
   if (session.status !== "done" || !session.completedAt)
     return scheduledEnd;
@@ -157,6 +162,8 @@ export function startSessionNow(session: Session, now = Date.now()): Session {
 }
 
 export function actualWorkedMinutes(session: Session): number | null {
+  // User-reported past times are not stopwatch measurements, even when precise.
+  if (session.historicalTimeAccuracy) return null;
   if (!session.actualStartedAt || !session.completedAt) return null;
   const start = Date.parse(session.actualStartedAt);
   const end = Date.parse(session.completedAt);
@@ -178,7 +185,8 @@ export function fits(state: State, session: Session, now: number) {
     (s) =>
       s.id !== session.id &&
       s.date === session.date &&
-      (s.status === "planned" || s.status === "done"),
+      (s.status === "planned" || s.status === "done") &&
+      s.historicalTimeAccuracy !== "unknown",
   );
   return (
     session.start >= wake &&

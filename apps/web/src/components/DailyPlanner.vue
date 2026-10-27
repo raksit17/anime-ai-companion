@@ -12,6 +12,7 @@ import { generateRequestId } from "../services/request-id";
 import { useChat } from "../stores/chat";
 import PlannerAdvanced from "./PlannerAdvanced.vue";
 import DailyTimeAnalytics from "./DailyTimeAnalytics.vue";
+import PastActivityForm from "./PastActivityForm.vue";
 type Session = {
   id: string;
   name: string;
@@ -22,6 +23,8 @@ type Session = {
   fixed: boolean;
   completedAt?: string;
   actualStartedAt?: string;
+  historicalTimeAccuracy?: "exact" | "estimated" | "unknown";
+  recordedAt?: string;
 };
 type PlannerFollowUp = {
   label: string;
@@ -225,6 +228,11 @@ function changeMonth(delta: number) {
   const d = new Date(month.value + "-01");
   d.setUTCMonth(d.getUTCMonth() + delta);
   month.value = d.toISOString().slice(0, 7);
+}
+async function onPastActivitySaved(saved: { id: string; date: string }) {
+  await refresh();
+  select(saved.date);
+  highlightedSession.value = saved.id;
 }
 async function refresh() {
   const state = await api("/planner");
@@ -903,6 +911,7 @@ watch(advanced, (value) => {
             >
           </button>
         </div>
+        <PastActivityForm :date="date" @saved="onPastActivitySaved" />
         <DailyTimeAnalytics :date="date" :revision="scheduleRevision" />
         <details class="month-picker">
           <summary>เปิดปฏิทินรายเดือน</summary>
@@ -984,8 +993,9 @@ watch(advanced, (value) => {
             @drop="dropOn($event, s)"
           >
             <div class="time">
-              <strong>{{ clock(s.start) }}</strong
-              ><small>{{ clock(s.start + s.duration) }}</small>
+              <strong v-if="s.historicalTimeAccuracy === 'unknown'">เวลาไม่ทราบ</strong>
+              <strong v-else>{{ clock(s.start) }}</strong
+              ><small v-if="s.historicalTimeAccuracy !== 'unknown'">{{ clock(s.start + s.duration) }}</small>
             </div>
             <div class="task">
               <div class="task-title">
@@ -1074,7 +1084,14 @@ watch(advanced, (value) => {
               <p>
                 {{ s.duration }} นาที <span v-if="s.fixed">· นัดคงที่</span>
               </p>
-              <p v-if="s.status === 'done' && actualFinishedClock(s)" class="actual-completion">
+              <p v-if="s.historicalTimeAccuracy" class="actual-completion">
+                <strong>✓ บันทึกย้อนหลัง</strong>
+                · {{ s.historicalTimeAccuracy === "unknown" ? "ไม่ทราบช่วงเวลา" :
+                  s.historicalTimeAccuracy === "estimated" ? "เวลาโดยประมาณ" : "ระบุเวลาที่ทำจริง" }}
+                <span v-if="s.recordedAt"> · เพิ่มภายหลัง</span>
+              </p>
+              <p v-if="s.status === 'done' && actualFinishedClock(s) &&
+                !s.historicalTimeAccuracy" class="actual-completion">
                 <span>เสร็จจริง {{ actualFinishedClock(s) }}</span>
                 <span v-if="completedOutsideSchedule(s)">
                   · เสร็จก่อนช่วงที่วางแผนไว้ (ไม่ทราบระยะเวลาทำจริงหากไม่กดเริ่ม)

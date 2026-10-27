@@ -30,6 +30,8 @@ type DayMetrics = {
   actualMeasuredMinutes: number;
   actualSampleCount: number;
   noActualStartCount: number;
+  unknownTimeCount: number;
+  unknownTimeReportedMinutes: number;
   ignoredSessions: number;
   overlappedMinutes: number;
   categories: Array<{
@@ -224,6 +226,11 @@ const freeWindows = computed(() =>
         <span v-if="data.actualSampleCount">
           จับเวลาทำจริงได้ {{ formatted(data.actualMeasuredMinutes) }}
           ({{ data.actualSampleCount }} งาน)
+        </span>
+        <span v-if="data.unknownTimeCount">
+          ทำเสร็จย้อนหลังไม่ทราบช่วงเวลา {{ data.unknownTimeCount }} งาน
+          (รายงาน {{ formatted(data.unknownTimeReportedMinutes) }})
+          · ไม่หักจากช่องว่างโดยเดาเวลา
         </span>
         <span v-if="data.noActualStartCount">
           ยังไม่ทราบเวลาทำจริง {{ data.noActualStartCount }} งาน

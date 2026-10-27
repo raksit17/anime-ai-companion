@@ -44,6 +44,8 @@ export type DailyTimeAnalytics = {
   actualMeasuredMinutes: number;
   actualSampleCount: number;
   noActualStartCount: number;
+  unknownTimeCount: number;
+  unknownTimeReportedMinutes: number;
   ignoredSessions: number;
   overlappedMinutes: number;
   categories: DailyCategoryCluster[];
@@ -84,8 +86,11 @@ export function analyzeDay(
   const cells: Cell[] = Array.from({ length: 1440 }, (_, minute) =>
     minute >= wake && minute < sleep ? unallocated() :
       { kind: "sleep", category: "sleep", label: "นอน / นอกเวลาตื่น" });
+  const unknownTime = state.sessions.filter((s) => s.date === date &&
+    s.status === "done" && s.historicalTimeAccuracy === "unknown");
   const active = state.sessions
     .filter((s) => s.date === date &&
+      s.historicalTimeAccuracy !== "unknown" &&
       (s.status === "done" || s.status === "planned"))
     .sort((a, b) => a.start - b.start ||
       Number(b.status === "done") - Number(a.status === "done") ||
@@ -184,12 +189,14 @@ export function analyzeDay(
     breakMinutes: requiredBreak, freeMinutes, futureFreeMinutes,
     freePercentOfAwake: Math.round((freeMinutes / awakeMinutes) * 100),
     actualMeasuredMinutes, actualSampleCount, noActualStartCount,
+    unknownTimeCount: unknownTime.length,
+    unknownTimeReportedMinutes: unknownTime.reduce((n, s) => n + s.duration, 0),
     ignoredSessions: state.sessions.filter((s) => s.date === date &&
       (s.status === "skipped" || s.status === "deferred")).length,
     overlappedMinutes,
     categories: [...clusters.values()].filter((x) => x.minutes > 0)
       .sort((a, b) => b.minutes - a.minutes || a.category.localeCompare(b.category)),
     timeline, freeWindows,
-    note: "แสดงการจัดสรรตามเวลาจอง ไม่ใช่เวลาที่ทำจริงทั้งหมด งานที่กดยืนยันเสร็จจะแสดงเป็นเสร็จตามตารางเดิม (คืนช่วงเวลาที่เสร็จก่อนกำหนดเมื่อมีเวลายืนยัน) ส่วนเวลาทำจริงนับเฉพาะงานที่มีทั้งเวลาเริ่มและสิ้นสุด การคำนวณวันเก่าใช้เวลาตื่น–นอนที่ตั้งค่าไว้ปัจจุบัน",
+    note: (unknownTime.length ? "มี " + unknownTime.length + " กิจกรรมย้อนหลังที่ไม่ทราบช่วงเวลา (รวม " + unknownTime.reduce((n, s) => n + s.duration, 0) + " นาที) จึงไม่หักออกจากเวลาที่ไม่มีการจอง กราฟอาจแสดงช่องว่างมากกว่าความว่างจริง · " : "") + "แสดงการจัดสรรตามเวลาจอง ไม่ใช่เวลาที่ทำจริงทั้งหมด งานที่กดยืนยันเสร็จจะแสดงเป็นเสร็จตามตารางเดิม (คืนช่วงเวลาที่เสร็จก่อนกำหนดเมื่อมีเวลายืนยัน) ส่วนเวลาทำจริงนับเฉพาะงานที่มีทั้งเวลาเริ่มและสิ้นสุด การคำนวณวันเก่าใช้เวลาตื่น–นอนที่ตั้งค่าไว้ปัจจุบัน",
   };
 }

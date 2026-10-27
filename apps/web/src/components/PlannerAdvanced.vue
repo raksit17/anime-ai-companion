@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api";
 import DailyTimeAnalytics from "./DailyTimeAnalytics.vue";
+import PastActivityForm from "./PastActivityForm.vue";
 type Session = {
   id: string;
   name: string;
@@ -11,6 +12,7 @@ type Session = {
   status: string;
   fixed: boolean;
   note?: string;
+  historicalTimeAccuracy?: "exact" | "estimated" | "unknown";
 };
 type Goal = {
   id?: string;
@@ -292,6 +294,7 @@ async function checkNotifications() {
     <p class="muted small">
       แจ้งเตือนเมื่อ API และหน้าต่างแอปเปิดอยู่ ตรวจทุก 30 วินาที
     </p>
+    <PastActivityForm :date="date" @saved="load" />
     <fieldset :disabled="busy">
       <details open class="habit-dashboard">
         <summary>วิเคราะห์นิสัยและประวัติกิจกรรมระยะยาว</summary>
@@ -521,7 +524,8 @@ async function checkNotifications() {
       /></label>
       <article v-for="s in sessions" :key="s.id" class="planner-card">
         <strong
-          >{{ clock(s.start) }}–{{ clock(s.start + s.duration) }}
+          >{{ s.historicalTimeAccuracy === "unknown" ? "ไม่ทราบช่วงเวลา" :
+            clock(s.start) + "–" + clock(s.start + s.duration) }}
           {{ s.name }}</strong
         >
         <p>
@@ -536,6 +540,7 @@ async function checkNotifications() {
                   : "รอทำ"
           }}
         </p>
+        <p v-if="s.historicalTimeAccuracy">↶ บันทึกย้อนหลัง · {{ s.historicalTimeAccuracy === "unknown" ? "ไม่ทราบเวลา" : s.historicalTimeAccuracy === "estimated" ? "เวลาประมาณ" : "เวลาที่ระบุ" }}</p>
         <p v-if="s.note">{{ s.note }}</p>
         <template v-if="s.status === 'planned'"
           ><button @click="mark(s, 'done')">✓ สำเร็จ</button

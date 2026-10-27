@@ -4,6 +4,7 @@
     "src/components/DailyPlanner.vue",
     "src/components/PlannerAdvanced.vue",
     "src/components/DailyTimeAnalytics.vue",
+    "src/components/PastActivityForm.vue",
     "src/api.ts",
     "src/stores/chat.ts",
     "src/services/request-id.ts"
