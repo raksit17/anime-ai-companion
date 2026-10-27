@@ -993,8 +993,9 @@ watch(advanced, (value) => {
             @drop="dropOn($event, s)"
           >
             <div class="time">
-              <strong>{{ clock(s.start) }}</strong
-              ><small>{{ clock(s.start + s.duration) }}</small>
+              <strong v-if="s.historicalTimeAccuracy === 'unknown'">เวลาไม่ทราบ</strong>
+              <strong v-else>{{ clock(s.start) }}</strong
+              ><small v-if="s.historicalTimeAccuracy !== 'unknown'">{{ clock(s.start + s.duration) }}</small>
             </div>
             <div class="task">
               <div class="task-title">
