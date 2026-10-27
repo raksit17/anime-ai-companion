@@ -119,10 +119,13 @@ export function computeHabitProfile(
     else if (s.status === "done") {
       group.done++;
       if (!s.fixed) group.flexibleDone++;
-      group.starts.push(s.start);
+      if (s.historicalTimeAccuracy !== "unknown" && s.historicalTimeAccuracy !== "estimated")
+        group.starts.push(s.start);
       group.doneDates.push(s.date);
-      const bucket = Math.floor(s.start / 30) * 30;
-      timeBuckets.set(bucket, (timeBuckets.get(bucket) ?? 0) + 1);
+      if (s.historicalTimeAccuracy !== "unknown" && s.historicalTimeAccuracy !== "estimated") {
+        const bucket = Math.floor(s.start / 30) * 30;
+        timeBuckets.set(bucket, (timeBuckets.get(bucket) ?? 0) + 1);
+      }
       const actual = actualWorkedMinutes(s);
       if (actual !== null) { group.observedActualMinutes += actual; group.actualSamples++; }
       const weekday = new Date(s.date).getUTCDay();
