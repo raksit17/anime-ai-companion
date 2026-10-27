@@ -72,6 +72,16 @@ export class EventDto extends MoveDto {
   @IsString() @MaxLength(120) @Matches(/\S/) name!: string;
   @IsInt() @Min(5) @Max(720) duration!: number;
 }
+/** Explicit user report; unknown time is allowed and never fabricated. */
+export class PastActivityDto {
+  @IsString() @MaxLength(120) @Matches(/\S/u) name!: string;
+  @IsString() @Matches(/^\d{4}-\d{2}-\d{2}$/) date!: string;
+  @IsInt() @Min(5) @Max(720) duration!: number;
+  @IsOptional() @IsInt() @Min(0) @Max(1439) start?: number;
+  @IsOptional() @IsIn(["exact", "estimated"]) accuracy?: "exact" | "estimated";
+  @IsOptional() @IsString() @MaxLength(1000) note?: string;
+  @IsOptional() @IsString() @Matches(/^[\w-]{1,100}$/) requestId?: string;
+}
 export class ProgressDto {
   @IsIn(["done", "skipped"]) status!: "done" | "skipped";
   @IsOptional() @IsString() @MaxLength(1000) note?: string;
