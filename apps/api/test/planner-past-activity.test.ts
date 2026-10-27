@@ -54,7 +54,7 @@ test("unknown past time counts as completed but leaves the graph free and never 
   const futureDate = "2026-10-27";
   state.sessions.push({ ...entry, id: "historical-on-same-day", date: futureDate });
   const proposed: Session = { id: "fresh", date: futureDate,
-    name: "Interview", start: 540, duration: 30, fixed: false,
+    name: "Interview", start: 600, duration: 30, fixed: false,
     reminder: 10, status: "planned", goalId: "daily:fresh" };
   assert.ok(fits(state, proposed, now));
 });
