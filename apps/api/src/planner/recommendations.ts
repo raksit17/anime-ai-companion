@@ -72,7 +72,8 @@ export function recommendDay(
   const groups = new Map<string, Session[]>();
   for (const session of input.sessions) {
     // Planned, skipped, deferred and future sessions are not completion evidence.
-    if (session.status !== "done" || session.date < start ||
+    if (session.status !== "done" || session.historicalTimeAccuracy === "unknown" ||
+        session.historicalTimeAccuracy === "estimated" || session.date < start ||
         session.date >= date || session.date > analysisTo) continue;
     const key = session.activityKey ?? activityKeyFor(session.name);
     groups.set(key, [...(groups.get(key) ?? []), session]);
