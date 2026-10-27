@@ -224,3 +224,39 @@ test("renaming a saved session invalidates existing planner proposals", async ()
   await assert.rejects(() => p.confirm(pending.id), /หมดอายุ|ข้อมูลเปลี่ยน/);
   assert.equal((await p.get()).sessions[0].name, "New title");
 });
+
+
+test("retroactive API persists a done activity and retries with same requestId are idempotent", async () => {
+  const p = fixture();
+  const date = new Date(Date.parse(new Date(Date.now() + 7 * 3600000)
+    .toISOString().slice(0, 10)) - 86400000).toISOString().slice(0, 10);
+  const request = { name: "อ่านข่าว BBC", date, duration: 30,
+    requestId: "retro-bbc-01" };
+  const first = await p.recordPastActivity(request);
+  const retried = await p.recordPastActivity(request);
+  assert.equal(first.id, retried.id);
+  const state = await p.get();
+  assert.equal(state.sessions.length, 1);
+  assert.equal(state.sessions[0].status, "done");
+  assert.equal(state.sessions[0].historicalTimeAccuracy, "unknown");
+  assert.equal(state.progress.done, 1);
+  assert.equal((await p.dayAnalytics(date)).unknownTimeCount, 1);
+  await assert.rejects(() => p.recordPastActivity({
+    ...request, requestId: "retro-bbc-other",
+  }), /บันทึกแล้ว/);
+});
+
+test("retroactive completion invalidates pending proposal and keeps done activity immutable", async () => {
+  const p = fixture();
+  await p.goal(goal);
+  const proposal = await p.propose({ date, energy: "normal" });
+  const y = new Date(Date.parse(new Date(Date.now() + 7 * 3600000)
+    .toISOString().slice(0, 10)) - 86400000).toISOString().slice(0, 10);
+  const entry = await p.recordPastActivity({
+    name: "ทำความสะอาดห้อง", date: y, duration: 20,
+    start: 600, accuracy: "exact",
+  });
+  await assert.rejects(() => p.confirm(proposal.id), /หมดอายุ|ข้อมูลเปลี่ยน/);
+  await assert.rejects(() => p.progress(entry.id, { status: "done" }), /บันทึกผลแล้ว/);
+  assert.equal((await p.get()).sessions.length, 1);
+});
