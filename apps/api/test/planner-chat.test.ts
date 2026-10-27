@@ -3226,3 +3226,44 @@ test("Yuna refuses overflowing seven-item batch atomically without an inflated c
   assert.equal((await p.get()).settings.maxMinutes, 60);
   assert.ok(response.message.followUps?.length);
 });
+
+
+test("Yuna backfills yesterday's finished activity without Ollama and without inventing the start time", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => {
+    throw new Error("Retrospective facts must not be routed into model scheduling");
+  };
+  const yesterday = new Date(Date.parse(today()) - 86400000).toISOString().slice(0, 10);
+  const request = {
+    ...dto, date: today(), requestId: "forgotten-yesterday-exercise",
+    message: "เมื่อวานออกกำลังกาย 30 นาที ลืมบันทึก", autoApply: true,
+  };
+  const result = await p.chat(request);
+  assert.equal(result.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(result.message.appliedChanges?.[0].date, yesterday);
+  const task = (await p.get()).sessions[0];
+  assert.equal(task.status, "done");
+  assert.equal(task.historicalTimeAccuracy, "unknown");
+  assert.equal(task.date, yesterday);
+  assert.equal(task.actualStartedAt, undefined);
+  assert.equal((await p.chat(request)).message.id, result.message.id);
+  assert.equal((await p.get()).sessions.length, 1);
+});
+
+test("Yuna previews a past completion if auto-apply is disabled, then confirms once", async () => {
+  const { p, ai } = fixture();
+  ai.plannerCompletion = async () => {
+    throw new Error("No language model needed");
+  };
+  const response = await p.chat({
+    ...dto, date: today(), requestId: "forgotten-yesterday-preview",
+    message: "เมื่อวานออกกำลังกาย 30 นาที ลืมบันทึก", autoApply: false,
+  });
+  assert.equal((await p.get()).sessions.length, 0);
+  assert.ok(response.proposal);
+  assert.match(response.message.outcome, /รอยืนยัน/);
+  await p.confirm(response.proposal.id);
+  const state = await p.get();
+  assert.equal(state.sessions.length, 1);
+  assert.equal(state.sessions[0].status, "done");
+});
