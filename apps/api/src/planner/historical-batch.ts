@@ -116,7 +116,8 @@ export function planHistoricalBatch(
   const gap = Math.max(15, state.settings.breakMinutes);
   const startWindow = dayAdd(today(now), -90);
   const allPast = state.sessions.filter((s) =>
-    s.date >= startWindow && s.date < date && s.date <= today(now) &&
+    s.historicalTimeAccuracy !== "unknown" &&
+    s.historicalTimeAccuracy !== "estimated" && s.date >= startWindow && s.date < date && s.date <= today(now) &&
     (s.status === "done" || s.status === "planned"));
   const records = names.map((name, i) => {
     const key = historicalActivityKey(name);
