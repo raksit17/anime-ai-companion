@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { api } from "../api";
 import DailyTimeAnalytics from "./DailyTimeAnalytics.vue";
+import PastActivityForm from "./PastActivityForm.vue";
 type Session = {
   id: string;
   name: string;
@@ -292,6 +293,7 @@ async function checkNotifications() {
     <p class="muted small">
       แจ้งเตือนเมื่อ API และหน้าต่างแอปเปิดอยู่ ตรวจทุก 30 วินาที
     </p>
+    <PastActivityForm :date="date" @saved="load" />
     <fieldset :disabled="busy">
       <details open class="habit-dashboard">
         <summary>วิเคราะห์นิสัยและประวัติกิจกรรมระยะยาว</summary>
