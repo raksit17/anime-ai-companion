@@ -162,8 +162,8 @@ export function startSessionNow(session: Session, now = Date.now()): Session {
 }
 
 export function actualWorkedMinutes(session: Session): number | null {
-  if (session.historicalTimeAccuracy === "unknown" ||
-      session.historicalTimeAccuracy === "estimated") return null;
+  // User-reported past times are not stopwatch measurements, even when precise.
+  if (session.historicalTimeAccuracy) return null;
   if (!session.actualStartedAt || !session.completedAt) return null;
   const start = Date.parse(session.actualStartedAt);
   const end = Date.parse(session.completedAt);
