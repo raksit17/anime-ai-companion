@@ -63,6 +63,7 @@ import {
   PlanDto,
   RecommendationDto,
   ProgressDto,
+  PastActivityDto,
   SettingsDto,
   SwapSessionsDto,
   EditSessionTimeDto,
@@ -91,6 +92,7 @@ import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "
 import { recommendDay, type HabitDayPreview } from "./recommendations";
 import { parseHistoricalBatch, planHistoricalBatch } from "./historical-batch";
 import { analyzeDay } from "./day-analytics";
+import { makePastActivity, parsePastActivityMessage } from "./past-activity";
 type Proposal = {
   reasons?: string[];
   breakMinutes?: number;
@@ -258,6 +260,25 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       take,
     });
     return events ?? [];
+  }
+  recordPastActivity(dto: PastActivityDto) {
+    return this.access((s) => {
+      if (dto.requestId) {
+        const previous = s.sessions.find((x) => x.historicalRequestId === dto.requestId);
+        if (previous) return previous;
+      }
+      let recorded: Session;
+      try { recorded = makePastActivity(s, dto); }
+      catch (error) { throw new BadRequestException((error as Error).message); }
+      if (s.sessions.some((x) =>
+        x.historicalTimeAccuracy && x.date === recorded.date &&
+        x.name.trim().toLocaleLowerCase() === recorded.name.trim().toLocaleLowerCase() &&
+        x.start === recorded.start && x.duration === recorded.duration))
+        throw new ConflictException("กิจกรรมย้อนหลังนี้ถูกบันทึกแล้ว กรุณาตรวจรายการในวันนั้น");
+      s.sessions.push(recorded);
+      this.changed(s);
+      return recorded;
+    }, true);
   }
   startSession(id: string) {
     return this.access((s) => {
@@ -699,6 +720,68 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             ? snapshot.proposal
             : undefined,
       };
+    // A concrete retrospective completion is data entry, not a request to
+    // reserve a past calendar slot. Handle it without unreliable model actions.
+    const reportedPast = parsePastActivityMessage(dto.message);
+    if (reportedPast) {
+      return this.access((s) => {
+        const previousReply = s.chats?.[dto.characterId]?.find(
+          (m) => m.role === "assistant" && m.requestId === dto.requestId);
+        if (previousReply) return {
+          message: previousReply,
+          proposal: s.proposal?.id === previousReply.proposalId ? s.proposal : undefined,
+        };
+        let session: Session;
+        try { session = makePastActivity(s, {
+          ...reportedPast, requestId: dto.requestId,
+        }); }
+        catch (error) { throw new BadRequestException((error as Error).message); }
+        if (s.sessions.some((x) =>
+          x.historicalTimeAccuracy && x.date === session.date &&
+          x.name.trim().toLocaleLowerCase() === session.name.trim().toLocaleLowerCase() &&
+          x.start === session.start && x.duration === session.duration))
+          throw new ConflictException("กิจกรรมย้อนหลังนี้มีอยู่แล้ว กรุณาตรวจตารางก่อน");
+        let proposal: Proposal | undefined;
+        if (dto.autoApply) {
+          s.sessions.push(session);
+          this.changed(s);
+        } else {
+          proposal = {
+            id: randomUUID(), revision: s.revision,
+            expires: Date.now() + 900000,
+            sessions: [...s.sessions, session], unscheduled: [],
+          };
+          s.proposal = proposal;
+        }
+        const msg: PlannerMessage = {
+          id: randomUUID(), role: "assistant", requestId: dto.requestId,
+          createdAt: new Date().toISOString(),
+          content: (dto.autoApply ? "ยูนะบันทึกกิจกรรมที่ทำเสร็จย้อนหลังให้แล้วค่ะ" :
+            "ยูนะเตรียมรายการย้อนหลังให้ตรวจแล้วค่ะ ยังไม่ได้บันทึก") +
+            " " + session.date + " · " + session.name + " · " +
+            session.duration + " นาที" +
+            (session.historicalTimeAccuracy === "unknown"
+              ? " (ไม่ทราบเวลาเริ่ม จึงไม่นำไปเดาเวลาในกราฟ)"
+              : " (เริ่ม " +
+                String(Math.floor(session.start / 60)).padStart(2, "0") + ":" +
+                String(session.start % 60).padStart(2, "0") + ")"),
+          outcome: dto.autoApply ? "บันทึกตารางแล้ว" : "รอยืนยันแผน ยังไม่ได้บันทึก",
+          ...(dto.autoApply ? { appliedChanges: [{
+            id: session.id, name: session.name, date: session.date,
+            start: session.start, duration: session.duration,
+            status: session.status, kind: "created" as const,
+          }] } : { proposalId: proposal!.id }),
+        };
+        s.chats ??= {};
+        s.chats[dto.characterId] = [
+          ...(s.chats[dto.characterId] ?? []),
+          { id: randomUUID(), role: "user" as const,
+            content: dto.message, createdAt: msg.createdAt },
+          msg,
+        ].slice(-80);
+        return { message: msg, proposal };
+      }, true);
+    }
     const [memories, habitProfile] = await Promise.all([
       this.db.memory.findMany({
         where: { characterId: dto.characterId },
@@ -1724,6 +1807,9 @@ class PlannerController {
   }
   @Get("habits/events") habitEvents(@Query("limit") limit?: string) {
     return this.planner.habitEvents(limit === undefined ? 100 : Number(limit));
+  }
+  @Post("sessions/backfill") backfill(@Body() dto: PastActivityDto) {
+    return this.planner.recordPastActivity(dto);
   }
   @Post("sessions/:id/start") start(@Param("id") id: string) {
     return this.planner.startSession(id);
