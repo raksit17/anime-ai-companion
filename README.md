@@ -298,3 +298,56 @@ response budget; LocalAI uses JSON-object completion with a 3000-token budget.
 Truncated/malformed replies are errors rather than partially applied schedules.
 The GPU gate and 120-second server deadline are shared with the existing AI path.
 Existing database migration is sufficient; no new migration or cloud dependency.
+
+
+## Optional external integrations via MCP
+
+The companion now has a **MCP Tools** tab. NestJS acts as a Streamable HTTP MCP client
+and the browser continues using its authenticated local `/v1` API. This is not
+an interchangeable replacement for Ollama's chat streaming or MOSS/FastAPI's WAV
+transport: those existing inference/voice integrations remain intact. MCP is
+for external tool providers that **actually expose an MCP endpoint**, not arbitrary
+REST endpoints. Only Streamable HTTP MCP versions `2025-03-26`, `2025-06-18`,
+and `2025-11-25` are supported by this initial adapter; stdio,
+HTTP+SSE (2024), and 2026-07-28's new metadata-based transport are not yet supported.
+
+1. Start a **trusted Streamable HTTP MCP server** separately. Its HTTP endpoint
+   normally ends in `/mcp`. Do not point this setting directly at Ollama, LocalAI,
+   MOSS, or another REST service unless you have an MCP adapter in front of it.
+2. Set `MCP_SERVERS_JSON` in `apps/api/.env`. For example (one line):
+
+   ```dotenv
+   MCP_SERVERS_JSON=[{"id":"tools","url":"http://127.0.0.1:3009/mcp","allowedTools":["read_status"],"tokenEnv":"MY_MCP_TOKEN"}]
+   MY_MCP_TOKEN=replace-with-real-secret
+   ```
+
+3. Restart NestJS, open **MCP Tools**, choose a server and tool, inspect its input
+   schema, enter JSON arguments, and confirm the action. An empty server list
+   disables MCP. Tools must be present in BOTH the server's `tools/list` and the
+   explicit `allowedTools` array. Use the optional **นำผลลัพธ์ไปถามในแชต** button
+   to paste a bounded excerpt into the composer; it does not automatically
+   transmit external data or execute additional tools.
+
+Environment variables named by `tokenEnv` are read **only by NestJS**; they are
+never returned through the MCP discovery API. The MCP backend disallows HTTP to
+non-loopback hosts unless `MCP_ALLOW_INSECURE_HTTP=true` is intentionally set;
+prefer HTTPS and authentication for remotely hosted MCP servers. Docker users
+must use a reachable backend-side hostname rather than `127.0.0.1` to refer to
+an MCP service on the Windows host (for example `host.docker.internal`), and
+explicitly opt in if using insecure HTTP. Do not expose tokens to the browser.
+
+The following local-token-protected endpoints are added:
+
+- `GET /v1/mcp/servers` — configured server IDs and allowlists (no secrets).
+- `GET /v1/mcp/servers/:id/tools` — filtered tool catalog.
+- `POST /v1/mcp/servers/:id/tools/:tool/call` — body `{"arguments":{}}`.
+
+**Security boundaries:** no model-driven tool execution; tools run only after an
+explicit button click and browser confirmation. Treat all MCP tool output as
+untrusted external content. Remote tools may be destructive; only grant allowlist
+access to services and operations you trust. HTTP redirects are rejected and
+response sizes, deadlines, and tool-catalog pagination are bounded. Because a
+remote tool can produce side effects, the client does not blindly retry normal
+failed calls. The MCP response is displayed as escaped text in the browser.
+
+Run `npm run test -w apps/api` for handshake, allowlist, and SSE coverage.
