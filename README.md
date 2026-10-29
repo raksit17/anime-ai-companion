@@ -1,8 +1,12 @@
 # Anime AI Companion — Phase 3 + optional Phase 4 LocalAI
 
+## MCP Gateway + Dockerized MOSS (optional)
+
+เมื่อใช้ MOSS Backend ผ่าน Docker (แทน Windows host), ให้เริ่ม `moss-voice-studio-starter/docker-compose.yml` ก่อน แล้วเปิด Companion ด้วย Compose 3 ไฟล์: `docker-compose.yml`, `docker-compose.mcp.yml`, `docker-compose.moss.yml` ตามลำดับ พร้อม `--env-file ../moss-voice-studio-starter/integration/companion-mcp/.env`. Gateway จะเรียก `http://moss-backend:8001` ผ่าน network `moss-voice-shared` โดยไม่ต้องเปิด MOSS API ให้ LAN; English TTS engine ยังคงอ่าน `apps/api/.env` (เช่น `chatterbox-turbo`), Thai ใช้ `moss`. [คู่มือ](docs/MCP-REDIS-DOCKER.md)
+
 ## MCP + Redis + Docker integration
 
-คู่มือติดตั้งและเชื่อมสอง repo: [MCP / Redis / Docker (ภาษาไทย)](docs/MCP-REDIS-DOCKER.md). Companion ใช้ REST gateway เดิม พร้อม MCP tools และ Redis/SSE event interfaces เพิ่มเติม; MOSS inference รันบน Windows host.
+คู่มือติดตั้งและเชื่อมสอง repo: [MCP / Redis / Docker (ภาษาไทย)](docs/MCP-REDIS-DOCKER.md). Companion ใช้ REST gateway เดิม พร้อม MCP tools และ Redis/SSE event interfaces เพิ่มเติม; MOSS inference เลือกได้ทั้ง Windows host และ Docker standalone ผ่าน `moss-voice-studio-starter/docker-compose.yml`.
 
 
 ## Docker + โทรศัพท์ (LAN / Windows)
