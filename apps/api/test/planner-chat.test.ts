@@ -13,6 +13,7 @@ import {
   parseGroupShiftPlan,
   parseScheduledAdd,
   parseUntimedSingleAdd,
+  parseColloquialHourlyAdd,
   completeScheduledAdd,
   replaceRejectedAddStart,
   parseDurationEdit,
@@ -2962,6 +2963,125 @@ test("Yuna persists one newly created review coding session and cites actual 16:
   const retry = await p.chat(request);
   assert.equal(retry.message.id, reply.message.id);
   assert.equal((await p.get()).sessions.length, 1);
+});
+
+test("11 โมง and 11:00 job-search windows ask for duration at the requested hour", () => {
+  const day = "2026-10-29";
+  const at0920 = Date.parse("2026-10-29T09:20:00+07:00");
+  const seed = initial();
+  seed.settings.maxMinutes = 720;
+  seed.sessions.push(
+    { id: "clean", goalId: "daily:clean", date: day, name: "ทำความสะอาด",
+      start: 540, duration: 15, status: "done", fixed: false, reminder: 10 },
+    { id: "bbc", goalId: "daily:bbc", date: day, name: "ดูข่าว bbc",
+      start: 585, duration: 15, status: "planned", fixed: false, reminder: 10 },
+    { id: "exercise", goalId: "daily:exercise", date: day, name: "ออกกำลังกาย",
+      start: 630, duration: 15, status: "planned", fixed: false, reminder: 10 },
+    { id: "interview", date: day, name: "ฝึกสัมภาษณ์ภาษาอังกฤษ",
+      start: 840, duration: 60, status: "planned", fixed: true, reminder: 10 },
+  );
+  for (const message of [
+    "วันนี้ อยากหางาน ช่วง 11 โมง",
+    "วันนี้ อยากหางาน ช่วง 11:00",
+  ]) {
+    const intent = parseColloquialHourlyAdd(seed, day, message, at0920);
+    assert.equal(intent?.command, undefined, message);
+    assert.match(intent?.reason ?? "", /หางาน/);
+    assert.match(intent?.reason ?? "", /11:00/);
+    assert.doesNotMatch(intent?.reason ?? "", /14:00/);
+    assert.match(intent?.reason ?? "", /ยังไม่ได้บันทึก/);
+    assert.equal(intent?.followUps?.[0]?.label, "เพิ่ม 30 นาที 11:00");
+    assert.match(intent?.followUps?.[0]?.prompt ?? "", /หางาน.*11:00 นาน 30 นาที/);
+  }
+  for (const message of [
+    "วันนี้ อยากหางาน ช่วง 11 โมง นาน 30 นาที",
+    "วันนี้ อยากหางาน ช่วง 11:00 30 นาที",
+    "วันนี้ อยากหางาน เวลา 11:00 นาน 30 นาที",
+  ]) {
+    assert.deepEqual(parseColloquialHourlyAdd(seed, day, message, at0920)?.command, {
+      type: "add", date: day, name: "หางาน",
+      start: 660, duration: 30, fixed: false,
+    }, message);
+  }
+  assert.equal(parseColloquialHourlyAdd(seed, day,
+    "วันนี้ อยากเลื่อนฝึกสัมภาษณ์ ช่วง 11 โมง", at0920), undefined);
+  assert.equal(parseColloquialHourlyAdd(seed, day,
+    "วันนี้ อยากหางาน ช่วง 11 โมง ได้ไหม?", at0920), undefined);
+  assert.deepEqual(seed.sessions.map((x) => x.name),
+    ["ทำความสะอาด", "ดูข่าว bbc", "ออกกำลังกาย", "ฝึกสัมภาษณ์ภาษาอังกฤษ"]);
+});
+
+test("11 o'clock job-search request never invents a 14:00 conflict or edits old activities", async () => {
+  const day = runtimeTomorrow;
+  const seed = initial();
+  seed.settings.maxMinutes = 720;
+  seed.sessions.push(
+    { id: "completed-clean", goalId: "daily:completed-clean",
+      name: "ทำความสะอาด", date: day, start: 540, duration: 15,
+      status: "done", fixed: false, reminder: 10 },
+    { id: "bbc", goalId: "daily:bbc", name: "ดูข่าว bbc",
+      date: day, start: 585, duration: 15, status: "planned",
+      fixed: false, reminder: 10 },
+    { id: "exercise", goalId: "daily:exercise", name: "ออกกำลังกาย",
+      date: day, start: 630, duration: 15, status: "planned",
+      fixed: false, reminder: 10 },
+    { id: "interview", name: "ฝึกสัมภาษณ์ภาษาอังกฤษ",
+      date: day, start: 840, duration: 60, status: "planned",
+      fixed: true, reminder: 10 },
+  );
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => {
+    throw new Error("11 o'clock must be handled by deterministic planner");
+  };
+  const preview = await p.chat({
+    ...dto, date: day, requestId: "find-job-11-preview",
+    message: "อยากหางาน ช่วง 11 โมง", autoApply: true,
+  });
+  assert.equal(preview.message.appliedChanges, undefined);
+  assert.match(preview.message.content, /11:00/);
+  assert.doesNotMatch(preview.message.content, /14:00/);
+  assert.equal(preview.message.followUps?.[0]?.label, "เพิ่ม 30 นาที 11:00");
+  assert.deepEqual((await p.get()).sessions, seed.sessions);
+  const confirmed = await p.chat({
+    ...dto, date: day, requestId: "find-job-11-confirmed",
+    message: preview.message.followUps![0].prompt,
+    autoApply: true,
+  });
+  assert.equal(confirmed.message.outcome, "บันทึกตารางแล้ว");
+  assert.equal(confirmed.message.appliedChanges?.length, 1);
+  assert.deepEqual({
+    name: confirmed.message.appliedChanges?.[0]?.name,
+    start: confirmed.message.appliedChanges?.[0]?.start,
+    duration: confirmed.message.appliedChanges?.[0]?.duration,
+    kind: confirmed.message.appliedChanges?.[0]?.kind,
+  }, { name: "หางาน", start: 660, duration: 30, kind: "created" });
+  const saved = (await p.get()).sessions;
+  assert.equal(saved.length, 5);
+  for (const original of seed.sessions) {
+    assert.deepEqual(saved.find((x: any) => x.id === original.id), original);
+  }
+});
+
+test("past/occupied 11:00 requests do not silently move to a 14:00 appointment", () => {
+  const date = "2026-10-29", at0920 = Date.parse("2026-10-29T09:20:00+07:00");
+  const seed = initial();
+  seed.sessions.push({
+    id: "interview", name: "สัมภาษณ์งาน", date,
+    start: 660, duration: 60, fixed: true,
+    status: "planned", reminder: 10,
+  });
+  const conflict = parseColloquialHourlyAdd(seed, date,
+    "วันนี้ อยากหางาน ช่วง 11 โมง 30 นาที", at0920);
+  assert.equal(conflict?.command, undefined);
+  assert.match(conflict?.reason ?? "", /11:00/);
+  assert.match(conflict?.reason ?? "", /ยังไม่ได้เพิ่มตาราง/);
+  assert.doesNotMatch(conflict?.reason ?? "", /14:00/);
+  const at1230 = Date.parse("2026-10-29T12:30:00+07:00");
+  const past = parseColloquialHourlyAdd(initial(), date,
+    "วันนี้ อยากหางาน ช่วง 11:00", at1230);
+  assert.equal(past?.command, undefined);
+  assert.equal(past?.followUps, undefined);
+  assert.match(past?.reason ?? "", /11:00/);
 });
 
 test("short Thai new-activity command is distinct from resizing an existing one", () => {
