@@ -1,0 +1,35 @@
+# Run with the Companion compose file FIRST; all paths resolve to its directory.
+services:
+  api:
+    environment:
+      VOICE_STUDIO_URL: http://voice-gateway:8088
+      VOICE_STUDIO_API_KEY: ${GATEWAY_API_KEY:?Set GATEWAY_API_KEY}
+      VOICE_STUDIO_EN_ENGINE: moss
+    depends_on:
+      voice-gateway:
+        condition: service_started
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: [redis-server, --save, '', --appendonly, 'no']
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  voice-gateway:
+    build: ../moss-voice-studio-starter/integration/companion-mcp/gateway
+    restart: unless-stopped
+    environment:
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:?Set GATEWAY_API_KEY}
+      MOSS_API_KEY: ${MOSS_API_KEY:?Set MOSS_API_KEY}
+      MOSS_URL: ${MOSS_URL:-http://host.docker.internal:8001}
+      REDIS_URL: redis://redis:6379/0
+    ports: [127.0.0.1:8088:8088]
+    depends_on:
+      redis:
+        condition: service_healthy
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]

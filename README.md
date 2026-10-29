@@ -1,5 +1,9 @@
 # Anime AI Companion — Phase 3 + optional Phase 4 LocalAI
 
+## MCP + Redis + Docker integration
+
+คู่มือติดตั้งและเชื่อมสอง repo: [MCP / Redis / Docker (ภาษาไทย)](docs/MCP-REDIS-DOCKER.md). Companion ใช้ REST gateway เดิม พร้อม MCP tools และ Redis/SSE event interfaces เพิ่มเติม; MOSS inference รันบน Windows host.
+
 
 ## Docker + โทรศัพท์ (LAN / Windows)
 
