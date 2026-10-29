@@ -31,6 +31,7 @@ import {
   parseFinishNowIntent,
   parseExistingTimeMove,
   parseScheduledAdd,
+  parseUntimedSingleAdd,
   parseMultipleNewTasks,
   parseNaturalThaiTimedBatch,
   parseBatchAlternativeFollowUp,
@@ -903,7 +904,11 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
       timedAdd = durationEdit || multipleAdds || shiftedBatch || insertInquiry || finishIntent || historicalBatch ? undefined :
         (replaceRejectedAddStart(history, dto.message, dto.date) ??
           parseScheduledAdd(dto.message, dto.date) ??
-          completeScheduledAdd(history, dto.message, dto.date));
+          completeScheduledAdd(history, dto.message, dto.date) ??
+          // Legacy day-prefixed simple adds already have a validated
+          // normalization path; preserve it to avoid changing that flow.
+          (simpleAddFromMessage(dto.message) ? undefined :
+            parseUntimedSingleAdd(dto.message, dto.date)));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
       const unparsedClockRequest =
@@ -1265,8 +1270,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         }
       } else if (timedAdd) {
         if (timedAdd.command) {
-          // Explicit clock and duration: the user, not the model, selects
-          // the start time. The executor may either place it exactly or reject.
+          // A clearly requested new activity bypasses the model. An explicit
+          // start is exact; otherwise the executor finds a free slot.
           output = {
             reply: "ได้เลยค่ะ ฉันจะตรวจช่วงเวลาที่ขอให้ตรงก่อนบันทึกนะ",
             actions: [timedAdd.command],
@@ -1512,7 +1517,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           };
           outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
-        if (result && timedAdd?.command) {
+        if (result && timedAdd?.command && timedAdd.command.start !== undefined) {
           const requested = timedAdd.command;
           const actual = result.sessions.find((item) =>
             item.date === requested.date &&
