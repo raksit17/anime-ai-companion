@@ -905,7 +905,10 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         (replaceRejectedAddStart(history, dto.message, dto.date) ??
           parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date) ??
-          parseUntimedSingleAdd(dto.message, dto.date));
+          // Legacy day-prefixed simple adds already have a validated
+          // normalization path; preserve it to avoid changing that flow.
+          (simpleAddFromMessage(dto.message) ? undefined :
+            parseUntimedSingleAdd(dto.message, dto.date)));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
       const unparsedClockRequest =
@@ -1514,7 +1517,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           };
           outcome = "ยังไม่ได้เปลี่ยนตาราง · " + blocked.reason;
         }
-        if (result && timedAdd?.command) {
+        if (result && timedAdd?.command && timedAdd.command.start !== undefined) {
           const requested = timedAdd.command;
           const actual = result.sessions.find((item) =>
             item.date === requested.date &&
