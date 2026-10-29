@@ -555,6 +555,43 @@ export function parseGroupShiftPlan(
   return { actions, names, date };
 }
 
+/** Parse explicit single NEW activity requests without a specified clock.
+ * Do not send "เพิ่ม ฝึกสนทนาภาษาอังกฤษ 30 นาที" to the language model:
+ * old completed sessions in context must never be mistaken for edit targets.
+ * The selected calendar date is used only when the user did not name a day.
+ */
+export function parseUntimedSingleAdd(
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const input = message.trim();
+  // Exact-time adds, multi-item lists, and questions have different flows.
+  if (/\d{1,2}:\d{2}|[,，、]|\s+และ\s+|[?？]/u.test(input) ||
+      /(?:ได้ไหม|ไหม|หรือเปล่า|หรือไม่|ช่วยเสนอ|ขอเสนอ)/u.test(input))
+    return undefined;
+  // "เพิ่มเวลา/เพิ่มอีก" are edits of existing activities, not creates.
+  const match = input.match(
+    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ช่วย|ขอ|รบกวน|อยากให้ยูนะ|ให้ยูนะ)\s*)?(?:เพิ่ม(?!(?:เวลา|ระยะเวลา|อีก|ขึ้น))(?:งาน|กิจกรรม|กำหนดการ)?|สร้าง(?:งาน|กิจกรรม)|ลงตาราง)\s*(.+?)\s*(?:(?:อีก|นาน|เป็นเวลา|ใช้เวลา|ระยะเวลา|ประมาณ|สัก)\s*)?(\d{1,3})\s*(นาที|ชั่วโมง)\s*(?:ให้ด้วย|ด้วย|หน่อย|นะ|ค่ะ|ครับ)?\s*$/u,
+  );
+  if (!match) return undefined;
+  const name = match[2].replace(/\s+/gu, " ").trim();
+  if (!name || name.length > 120 || !/[\p{L}]/u.test(name) ||
+      /^(?:เวลา|ระยะเวลา|อีก)/u.test(name) ||
+      /(?:วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)/u.test(name))
+    return undefined;
+  const duration = Number(match[3]) * (match[4] === "ชั่วโมง" ? 60 : 1);
+  if (duration < 5 || duration > 240)
+    return { reason: "ระยะเวลากิจกรรมต้องอยู่ระหว่าง 5–240 นาที" };
+  const days = match[1] === "วันนี้" ? 0 :
+    match[1] === "พรุ่งนี้" || match[1] === "พรุ้งนี้" ? 1 :
+    match[1]?.startsWith("มะรืน") ? 2 : undefined;
+  const date = days === undefined ? selected :
+    new Date(Date.parse(today(now)) + days * 86400000).toISOString().slice(0, 10);
+  if (!validDate(date)) return { reason: "วันที่กิจกรรมไม่ถูกต้อง" };
+  return { command: { type: "add", name, duration, date, fixed: false } };
+}
+
 export function simpleAddFromMessage(message: string, now = Date.now()): Command | undefined {
   const match = message.trim().match(
     /^(วันนี้|พรุ่งนี้|มะรืน(?:นี้)?)\s*เพิ่ม(?:งาน|กิจกรรม|กำหนดการ)?\s*(.+?)\s*(?:อีก\s*)?(\d{1,3})\s*(ชั่วโมง|นาที)\s*(?:ด้วย|หน่อย|นะ|ค่ะ|ครับ)?\s*$/u,
