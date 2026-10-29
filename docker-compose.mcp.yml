@@ -4,7 +4,7 @@ services:
     environment:
       VOICE_STUDIO_URL: http://voice-gateway:8088
       VOICE_STUDIO_API_KEY: ${GATEWAY_API_KEY:?Set GATEWAY_API_KEY}
-      VOICE_STUDIO_EN_ENGINE: moss
+      # Keep VOICE_STUDIO_EN_ENGINE from apps/api/.env (e.g. chatterbox-turbo).
     depends_on:
       voice-gateway:
         condition: service_started

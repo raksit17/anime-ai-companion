@@ -123,7 +123,7 @@ GET /events เป็น SSE ที่ต้องส่ง authentication heade
 
 สำรอง PostgreSQL volume กับ MOSS data directory และ voice profiles ก่อนอัปเกรด หยุดด้วย compose arguments เดิมตามด้วย `down` ห้ามใช้ `down -v` หากต้องเก็บข้อมูล Redis ชุดนี้ไม่เก็บข้อมูลถาวรเพราะมีหน้าที่แจ้งเหตุการณ์เท่านั้น
 
-ชุดนี้ไม่รวม Docker GPU image สำหรับ MOSS, F5, Chatterbox หรือ SGLang การย้าย inference ทั้งหมดเข้า container ต้องแยก image/runtime และทดสอบจริงกับ driver/VRAM ของเครื่องก่อน ไม่มีผลทดสอบ inference หรือ Docker runtime จากสภาพแวดล้อมผู้จัดทำ
+Compose ของ Companion ชุดนี้ไม่รวม GPU inference image โดยตรง แต่ MOSS repo มี Docker Compose แยกสำหรับ GPU Backend + Vue Studio พร้อม Chatterbox worker แยก Python environment (ไม่ติดตั้ง F5/SGLang) ดูรายละเอียด `moss-voice-studio-starter/docs/DOCKER-COMPOSE.md` การรองรับ GPU/VRAM และการสร้างเสียงจริงยังต้องทดสอบบนเครื่องผู้ใช้
 
 ## แหล่งอ้างอิง
 
@@ -135,3 +135,19 @@ GET /events เป็น SSE ที่ต้องส่ง authentication heade
 ## ตรวจสอบ gateway ก่อนใช้งาน
 
 จาก moss-voice-studio-starter/integration/companion-mcp สร้าง virtual environment, ติดตั้ง `pip install -r gateway/requirements.txt` และรัน `python -m unittest discover -s gateway -v` ทดสอบ 7 รายการผ่านด้วย mocked upstream รวม MCP tools/list ไม่มีการทดสอบ GPU inference หรือ Docker runtime ในสภาพแวดล้อมผู้จัดทำ
+
+
+## 7. เชื่อม MOSS Backend ที่รันบน Docker (ทางเลือกใหม่)
+
+หากต้องการให้ MOSS รัน Docker แทน Windows: เริ่มที่ root repo `moss-voice-studio-starter` ก่อนด้วย `docker compose up -d --build`. Compose ของ MOSS จะสร้าง network `moss-voice-shared` และ service DNS `moss-backend`. ตั้ง `MOSS_API_KEY` ใน `integration/companion-mcp/.env` ให้เท่ากับ `API_KEY` ของ `backend/.env` และตั้ง `GATEWAY_API_KEY` แยกต่างหาก
+
+จาก root ของ `anime-ai-companion` ใช้ override ตัวที่สามสำหรับการเชื่อม Docker-to-Docker:
+
+```powershell
+docker compose --env-file ../moss-voice-studio-starter/integration/companion-mcp/.env -f docker-compose.yml -f docker-compose.mcp.yml -f docker-compose.moss.yml config --quiet
+docker compose --env-file ../moss-voice-studio-starter/integration/companion-mcp/.env -f docker-compose.yml -f docker-compose.mcp.yml -f docker-compose.moss.yml up -d --build postgres redis voice-gateway api web
+```
+
+`docker-compose.mcp.yml` ไม่บังคับ English engine อีกต่อไป: ค่า `VOICE_STUDIO_EN_ENGINE=chatterbox-turbo` และ `VOICE_STUDIO_EN_VOICE_ID` ใน Companion API `.env` จะยังคงใช้งานได้หาก voice profile นั้นมีอยู่ใน MOSS Backend แบบ Docker จริง ส่วนภาษาไทยยังใช้ `moss`. งานเสียงเดินทางผ่าน REST Gateway (ส่งต่อ `engine` ตาม request) ส่วน MCP tool `synthesize_speech` ปัจจุบันยัง hardcode `moss`.
+
+ข้อมูล `backend/data` และ `backend/models` ถูก bind mount ใน MOSS Compose แต่ SQLite/voice profile ที่เคยบันทึก path แบบ Windows อาจต้องย้าย/ลงทะเบียนใหม่ก่อนสั่งสร้างเสียง ห้ามถือว่า health 200 ยืนยันว่า inference ใช้งานได้
