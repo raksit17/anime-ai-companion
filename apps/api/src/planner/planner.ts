@@ -32,6 +32,7 @@ import {
   parseExistingTimeMove,
   parseScheduledAdd,
   parseUntimedSingleAdd,
+  parseColloquialHourlyAdd,
   parseMultipleNewTasks,
   parseNaturalThaiTimedBatch,
   parseBatchAlternativeFollowUp,
@@ -907,6 +908,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           completeScheduledAdd(history, dto.message, dto.date) ??
           // Legacy day-prefixed simple adds already have a validated
           // normalization path; preserve it to avoid changing that flow.
+          parseColloquialHourlyAdd(snapshot, dto.date, dto.message) ??
           (simpleAddFromMessage(dto.message) ? undefined :
             parseUntimedSingleAdd(dto.message, dto.date)));
       // A clear clock in a scheduling request must never fall through to
@@ -1279,14 +1281,14 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         } else {
           blocked = {
             reason: timedAdd.reason ?? "คำสั่งเพิ่มกิจกรรมยังไม่ครบ",
-            followUps: timedAdd.reason?.includes("นานกี่นาที")
+            followUps: timedAdd.followUps ?? (timedAdd.reason?.includes("นานกี่นาที")
               ? [
                   { label: "30 นาที", prompt: "30 นาที" },
                   { label: "60 นาที", prompt: "60 นาที" },
                 ]
               : [
                   { label: "ตรวจตาราง", prompt: "ช่วยแสดงตารางวันที่เลือกเพื่อปรับคำขอใหม่" },
-                ],
+                ]),
           };
           output = {
             reply: timedAdd.reason ?? "ช่วยระบุเวลาให้ชัดเจนอีกนิดนะคะ",

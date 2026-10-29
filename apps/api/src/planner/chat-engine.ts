@@ -41,6 +41,7 @@ const formatMinutes = (minutes: number) =>
 export type ScheduledAddIntent = {
   command?: Command;
   reason?: string;
+  followUps?: PlannerFollowUp[];
 };
 const thaiMonths: Record<string, number> = {
   มกราคม: 1, กุมภาพันธ์: 2, มีนาคม: 3, เมษายน: 4,
@@ -560,6 +561,104 @@ export function parseGroupShiftPlan(
  * old completed sessions in context must never be mistaken for edit targets.
  * The selected calendar date is used only when the user did not name a day.
  */
+/** A new activity requested around an hour, such as "วันนี้ อยากหางาน ช่วง 11 โมง".
+ * Protects the user's 11:00 constraint from model-suggested unrelated hours.
+ * An unspecified duration is a preview/clarification, never an inferred save.
+ */
+export function parseColloquialHourlyAdd(
+  state: State,
+  selected: string,
+  message: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const input = message.trim();
+  if (/[?？]|(?:ได้ไหม|ไหม|หรือเปล่า|ดีไหม)/u.test(input) ||
+      /[,，、]|\s+และ\s+|\d{1,2}:\d{2}\s*[-–—ถึง]+\s*\d{1,2}:\d{2}/u.test(input))
+    return undefined;
+  const match = input.match(
+    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ฉัน|ผม|เรา)\s*)?(?:(?:อยาก(?:จะ)?|ช่วย(?:เพิ่ม|จัด|ลงตาราง)?|ขอ(?:เพิ่ม|จัด)?|เพิ่ม(?:งาน|กิจกรรม)?|จัด(?:ตาราง|เวลา)?(?:ให้)?|ลงตาราง)\s*)(.+?)\s*(ช่วง|ตอน|เวลา|เริ่ม(?:เวลา)?|ประมาณ)\s*(?:(บ่าย|เช้า|เย็น)\s*)?(\d{1,2})(?::(\d{2})|\s*โมง(?:\s*(เช้า|เย็น))?)\s*(?:น\.?)?\s*(?:(?:นาน|เป็นเวลา|ใช้เวลา|ระยะเวลา|อีก|ประมาณ|สัก)\s*)?(\d{1,3})?\s*(นาที|ชั่วโมง)?\s*(?:หน่อย|ด้วย|นะ|ค่ะ|ครับ)?\s*$/u,
+  );
+  if (!match) return undefined;
+  const name = match[2].replace(/\s+/gu, " ").trim();
+  if (!name || name.length > 120 || !/[\p{L}]/u.test(name) ||
+      /^(?:เลื่อน|ย้าย|ขยับ|แก้|ปรับ|เปลี่ยน|เสร็จ|ทำเสร็จ|เวลา|ระยะเวลา)/u.test(name))
+    return undefined;
+  const dayOffset = match[1] === "วันนี้" ? 0 :
+    ["พรุ่งนี้", "พรุ้งนี้"].includes(match[1]) ? 1 :
+      match[1]?.startsWith("มะรืน") ? 2 : undefined;
+  const date = dayOffset === undefined ? selected :
+    new Date(Date.parse(today(now)) + dayOffset * 86400000).toISOString().slice(0, 10);
+  if (!validDate(date)) return { reason: "วันที่กิจกรรมไม่ถูกต้อง" };
+
+  const qualifier = match[4] ?? match[7];
+  let hours = Number(match[5]);
+  const mins = match[6] === undefined ? 0 : Number(match[6]);
+  if (hours > 23 || mins > 59 || (match[6] === undefined && hours > 12))
+    return { reason: "เวลาที่ระบุไม่ถูกต้อง กรุณาใช้รูปแบบ 11 โมง หรือ 11:00" };
+  if (qualifier === "บ่าย" || qualifier === "เย็น")
+    if (hours <= 11) hours += 12;
+  const requestedStart = hours * 60 + mins;
+  if (requestedStart > 1439) return { reason: "เวลาเริ่มไม่ถูกต้อง" };
+  // "ช่วง" and "ประมาณ" are hour windows; "เวลา"/"เริ่ม"/"ตอน" are exact.
+  const isWindow = match[3] === "ช่วง" || match[3] === "ประมาณ";
+  const strict = {
+    ...state,
+    settings: { ...state.settings, breakMinutes: Math.max(15, state.settings.breakMinutes) },
+  };
+  const starts = isWindow
+    ? Array.from({ length: 12 }, (_, i) => requestedStart + i * 5)
+        .filter((minute) => minute <= 1439 && minute < requestedStart + 60)
+    : [requestedStart];
+  const format = (minutes: number) => formatMinutes(minutes);
+  const available = (duration: number) => starts.find((start) =>
+    fits(strict, {
+      id: "hourly-add-preview", goalId: "daily:hourly-add-preview",
+      date, name, start, duration, status: "planned", fixed: false, reminder: 10,
+    }, now),
+  );
+  const hourLabel = isWindow
+    ? format(requestedStart) + "–" + format(Math.min(1440, requestedStart + 60))
+    : format(requestedStart);
+  const duration = match[8] && match[9]
+    ? durationFromUnit(match[8], match[9]) : undefined;
+  if (match[8] && !match[9] || !match[8] && match[9])
+    return { reason: "ระยะเวลายังไม่ชัดเจน กรุณาระบุเป็นนาทีหรือชั่วโมง" };
+  if (duration !== undefined) {
+    if (duration < 5 || duration > 240)
+      return { reason: "ระยะเวลากิจกรรมต้องอยู่ระหว่าง 5–240 นาที" };
+    // An exact start is validated in executeCommands and can never drift.
+    if (!isWindow)
+      return { command: { type: "add", name, date, start: requestedStart, duration, fixed: false } };
+    const start = available(duration);
+    return start === undefined
+      ? { reason: "ยังจัด " + name + " " + duration + " นาทีในช่วง " +
+          hourLabel + " ของวันที่ " + date +
+          " ไม่ได้โดยเว้นพักและไม่ย้ายกิจกรรมเดิม จึงยังไม่ได้เพิ่มตาราง" }
+      : { command: { type: "add", name, date, start, duration, fixed: false } };
+  }
+
+  const choices = [30, 60, 15].map((minutes) => ({
+    minutes, start: available(minutes),
+  })).filter((option) => option.start !== undefined).slice(0, 2);
+  if (!choices.length) return {
+    reason: "ยูนะตรวจช่วง " + hourLabel + " วันที่ " + date +
+      " แล้ว แต่ไม่พบช่องว่างที่เหมาะสมอย่างน้อย 15 นาทีตามกฎเวลาพักและเวลาปัจจุบัน " +
+      "จึงยังไม่ได้เพิ่มกิจกรรม " + name + " และจะไม่ย้ายไปเวลาอื่นเอง",
+  };
+  return {
+    reason: "ยูนะเข้าใจว่าอยาก " + name + " " +
+      (isWindow ? "ช่วง " : "เวลา ") + hourLabel + " วันที่ " + date +
+      " ค่ะ พบช่องว่างที่จัดได้ " +
+      choices.map((option) => format(option.start!) + " นาน " + option.minutes + " นาที").join(" หรือ ") +
+      " อยากทำกี่นาทีคะ? ยังไม่ได้บันทึกหรือย้ายกิจกรรมอื่นนะคะ",
+    followUps: choices.map((option) => ({
+      label: "เพิ่ม " + option.minutes + " นาที " + format(option.start!),
+      prompt: "เพิ่มงาน " + name + " วันที่ " + date +
+        " เวลา " + format(option.start!) + " นาน " + option.minutes + " นาที",
+    })),
+  };
+}
+
 export function parseUntimedSingleAdd(
   message: string,
   selected: string,
