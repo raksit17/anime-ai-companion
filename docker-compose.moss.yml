@@ -1,0 +1,16 @@
+# Optional third override: connect the Companion Gateway to a Dockerized
+# MOSS backend on the shared network created by moss-voice-studio-starter.
+# Apply after docker-compose.yml and docker-compose.mcp.yml.
+# Start MOSS Docker Compose first.
+services:
+  voice-gateway:
+    environment:
+      MOSS_URL: http://moss-backend:8001
+    networks:
+      - default
+      - moss-shared
+
+networks:
+  moss-shared:
+    external: true
+    name: moss-voice-shared
