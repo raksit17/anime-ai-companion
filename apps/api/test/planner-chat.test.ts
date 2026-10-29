@@ -12,6 +12,7 @@ import {
   parseBatchAlternativeFollowUp,
   parseGroupShiftPlan,
   parseScheduledAdd,
+  parseUntimedSingleAdd,
   completeScheduledAdd,
   replaceRejectedAddStart,
   parseDurationEdit,
@@ -2961,6 +2962,77 @@ test("Yuna persists one newly created review coding session and cites actual 16:
   const retry = await p.chat(request);
   assert.equal(retry.message.id, reply.message.id);
   assert.equal((await p.get()).sessions.length, 1);
+});
+
+test("short Thai new-activity command is distinct from resizing an existing one", () => {
+  assert.deepEqual(
+    parseUntimedSingleAdd("เพิ่ม ฝึกสนทนาภาษาอังกฤษ 30 นาที", date, now)?.command,
+    {
+      type: "add", name: "ฝึกสนทนาภาษาอังกฤษ", duration: 30,
+      date, fixed: false,
+    },
+  );
+  assert.deepEqual(
+    parseUntimedSingleAdd("พรุ่งนี้ ช่วยเพิ่มกิจกรรมฝึก TOEIC 1 ชั่วโมง", date, now)?.command,
+    {
+      type: "add", name: "ฝึก TOEIC", duration: 60,
+      date: "2030-01-08", fixed: false,
+    },
+  );
+  assert.equal(
+    parseUntimedSingleAdd("เพิ่มเวลาทำความสะอาดอีก 15 นาที", date, now),
+    undefined,
+  );
+  assert.equal(
+    parseUntimedSingleAdd("เพิ่ม ฝึกสนทนาภาษาอังกฤษ 30 นาที ได้ไหม?", date, now),
+    undefined,
+  );
+  assert.equal(
+    parseUntimedSingleAdd("เพิ่ม อ่านข่าว และ ฝึกสนทนาภาษาอังกฤษ 30 นาที", date, now),
+    undefined,
+  );
+});
+
+test("Yuna adds 30-minute English conversation without touching completed cleaning", async () => {
+  const targetDay = runtimeTomorrow;
+  const seed = initial();
+  seed.settings.maxMinutes = 720;
+  seed.sessions.push({
+    id: "clean-completed", name: "ทำความสะอาด", date: targetDay,
+    start: 540, duration: 15, status: "done", fixed: false,
+    goalId: "daily:clean-completed", reminder: 10,
+  });
+  seed.sessions.push({
+    id: "bbc-scheduled", name: "ดูข่าว bbc", date: targetDay,
+    start: 585, duration: 15, status: "planned", fixed: false,
+    goalId: "daily:bbc-scheduled", reminder: 10,
+  });
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => {
+    throw new Error("unambiguous Thai new activity must not invoke AI");
+  };
+  const request = {
+    ...dto, date: targetDay, requestId: "english-conversation-new",
+    message: "เพิ่ม ฝึกสนทนาภาษาอังกฤษ 30 นาที", autoApply: true,
+  };
+  const result = await p.chat(request);
+  assert.equal(result.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(result.message.content, /เพิ่ม ฝึกสนทนาภาษาอังกฤษ/);
+  assert.doesNotMatch(result.message.content, /เพิ่มเวลา.*ทำความสะอาด/);
+  assert.deepEqual(
+    result.message.appliedChanges?.map((change: any) => ({
+      name: change.name, duration: change.duration, kind: change.kind,
+    })),
+    [{ name: "ฝึกสนทนาภาษาอังกฤษ", duration: 30, kind: "created" }],
+  );
+  const saved = (await p.get()).sessions;
+  assert.equal(saved.length, 3);
+  assert.equal(saved.find((item: any) => item.id === "clean-completed")?.status, "done");
+  assert.equal(saved.find((item: any) => item.id === "clean-completed")?.duration, 15);
+  assert.equal(saved.find((item: any) => item.id === "bbc-scheduled")?.start, 585);
+  assert.equal(saved.filter((item: any) => item.name === "ฝึกสนทนาภาษาอังกฤษ").length, 1);
+  assert.equal((await p.chat(request)).message.id, result.message.id);
+  assert.equal((await p.get()).sessions.length, 3);
 });
 
 test("review coding first prompt ประมาณ 15 นาที does not ask 30/60-minute clarification", async () => {
