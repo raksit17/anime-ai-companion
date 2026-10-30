@@ -92,6 +92,7 @@ import {
 } from "./engine";
 import { computeHabitProfile, diffSessionEvents, type ActivityEventKind } from "./history";
 import { recommendDay, type HabitDayPreview } from "./recommendations";
+import { isRecommendationRequest, recommendNext } from "./next-recommendation";
 import { parseHistoricalBatch, planHistoricalBatch } from "./historical-batch";
 import { analyzeDay } from "./day-analytics";
 import { makePastActivity, parsePastActivityMessage } from "./past-activity";
@@ -722,6 +723,24 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
             ? snapshot.proposal
             : undefined,
       };
+    if (isRecommendationRequest(dto.message)) {
+      return this.access((s) => {
+        const existing = s.chats?.[dto.characterId]?.find(m =>
+          m.role === "assistant" && m.requestId === dto.requestId);
+        if (existing) return { message: existing };
+        const recommendation = recommendNext(s, dto.date, dto.message);
+        const createdAt = new Date().toISOString();
+        const msg: PlannerMessage = {
+          id: randomUUID(), role: "assistant", requestId: dto.requestId,
+          content: recommendation.reply, createdAt,
+          followUps: recommendation.followUps, outcome: "คำแนะนำ ยังไม่ได้เปลี่ยนตาราง",
+        };
+        s.chats ??= {};
+        s.chats[dto.characterId] = [...(s.chats[dto.characterId] ?? []),
+          { id: randomUUID(), role: "user" as const, content: dto.message, createdAt }, msg].slice(-80);
+        return { message: msg };
+      }, true);
+    }
     // A concrete retrospective completion is data entry, not a request to
     // reserve a past calendar slot. Handle it without unreliable model actions.
     const reportedPast = parsePastActivityMessage(dto.message);
