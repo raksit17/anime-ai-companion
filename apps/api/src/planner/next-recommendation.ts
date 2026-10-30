@@ -76,7 +76,9 @@ export function recommendNext(state: State, selectedDate: string, message: strin
       .sort((a,b) => Math.abs(a-goal.preferred)-Math.abs(b-goal.preferred) || a-b) : [goal.preferred];
     const start = starts.find(start => inWindow({...base,start}) && fits(work, {...base, start}, searchNow));
     if (start === undefined) continue;
-    choices.push({session: {...base,start}, reason: 'เป็นเป้าหมายที่คุณตั้งไว้และยังไม่ได้ทำในวันนี้'});
+    choices.push({session: {...base,start}, reason: goal.id.startsWith('ai-recommendation:')
+      ? 'เป็นแนวคิดที่ AI เสนอจากบริบทการคุย และผ่านการตรวจช่วงว่างแล้ว'
+      : 'เป็นเป้าหมายที่คุณตั้งไว้และยังไม่ได้ทำในวันนี้'});
     if (choices.length === 3) break;
   }
   if (!choices.length) {

@@ -15,6 +15,8 @@ import { validate } from "class-validator";
 import { Database } from "./database";
 import { OllamaService } from "./ai/ollama.service";
 import { buildPrompt } from "./ai/prompt-builder";
+import { companionContext } from "./ai/companion-context";
+import { today } from "./planner/engine";
 import { normalizeThaiFeminineEnding } from "./ai/text-style";
 import { SendDto } from "./dto";
 import { buildAnimationPlan, classifyEmotion } from "./animation/dialogue-parser";
@@ -160,11 +162,21 @@ export class ChatGateway implements OnGatewayDisconnect {
         ? await Promise.all(memories.map((m) => translateThai(m.content)))
         : memories.map((m) => m.content);
 
+      const plannerRow = await this.db.plannerStore.findUnique({where:{id:'local'}});
+      const plannerData = plannerRow?.data as any;
+      const sharedPlannerContext = {
+        conversation: companionContext(plannerData?.chats?.[conv.characterId] ?? []),
+        settings: plannerData?.settings,
+        goals: plannerData?.goals,
+        today: today(),
+        sessions: (plannerData?.sessions ?? []).filter((s: any)=>s.date===today()).slice(0,60),
+      };
       for await (const delta of this.ai.stream(
         buildPrompt(
           { ...conv.character, personality, systemPrompt: characterPrompt },
           translatedMemories.map((content) => ({ content })),
           history.reverse(),
+          sharedPlannerContext,
         ),
         signal,
       )) {
