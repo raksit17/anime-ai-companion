@@ -14,3 +14,5 @@
 ทดสอบ regression สำหรับกรณีในภาพ: หน้าเปิดวันก่อน งานเสร็จแล้ว และเวลาที่ผ่านไป รวมถึงการเลือกงานถัดไป การพัก เพดานพลังงาน และไม่แก้ state ต้นฉบับ
 
 Full application build was not verified in the authoring environment: npm ci was blocked by Windows EPERM when linking the local pixi-live2d5 workspace. No browser or live model test is claimed.
+
+ระบุช่วงเวลาได้ เช่น ช่วงบ่าย 3 (15:00–16:00), ช่วงเย็น 6 หรือช่วง 15:00–16:30 ระบบกรองทั้งเวลาเริ่มและเวลาจบ และไม่หยิบกิจกรรมก่อนช่วงที่ขอมาตอบแทน หากไม่มีตัวเลือกในช่วงนั้นจะแจ้งตรง ๆ โดยไม่แก้ตาราง
