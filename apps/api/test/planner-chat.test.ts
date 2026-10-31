@@ -13,6 +13,7 @@ import {
   parseGroupShiftPlan,
   parseScheduledAdd,
   parseUntimedSingleAdd,
+  previewNextUntimedAdd,
   parseColloquialHourlyAdd,
   completeScheduledAdd,
   replaceRejectedAddStart,
@@ -3458,4 +3459,64 @@ test("Yuna previews a past completion if auto-apply is disabled, then confirms o
   const state = await p.get();
   assert.equal(state.sessions.length, 1);
   assert.equal(state.sessions[0].status, "done");
+});
+
+test("screenshot regression: next job after 20:30–20:45 is proposed at 21:00, never 15:00", () => {
+  const nowLocal = Date.parse("2026-10-31T20:28:00+07:00");
+  const selected = "2026-10-31";
+  const state = initial();
+  state.sessions = [
+    { id: "game", name: "เล่นเกม coral island", date: selected, start: 960, duration: 60, status: "done", fixed: false, reminder: 10 },
+    { id: "exercise", name: "ออกกำลังกาย", date: selected, start: 1020, duration: 30, status: "done", fixed: false, reminder: 10 },
+    { id: "english", name: "ฝึกภาษาอังกฤษ youtube", date: selected, start: 1230, duration: 15, status: "planned", fixed: false, reminder: 10 },
+  ];
+  const before = structuredClone(state);
+  const answer = previewNextUntimedAdd(state, selected, "เพิ่ม หางานต่อไป", nowLocal);
+  assert.ok(answer?.reason?.includes("21:00"));
+  assert.match(answer?.reason ?? "", /ยังไม่ได้บันทึก/);
+  assert.deepEqual(answer?.followUps?.map(x => x.label), [
+    "หางาน 21:00 (30 นาที)", "หางาน 21:00 (15 นาที)",
+  ]);
+  for (const option of answer?.followUps ?? []) {
+    assert.doesNotMatch(option.prompt ?? "", /15:00/);
+    const parsed = parseScheduledAdd(option.prompt!, selected, nowLocal);
+    assert.equal(parsed?.command?.name, "หางาน");
+    assert.equal(parsed?.command?.start, 1260);
+    assert.ok([15, 30].includes(parsed?.command?.duration ?? 0));
+    const applied = executeCommands(state, [parsed!.command!], selected, nowLocal);
+    assert.equal(applied.sessions.length, 4);
+  }
+  assert.deepEqual(state, before);
+});
+
+test("next untimed add never proposes already-passed time or invents a saved duration", () => {
+  const nowLocal = Date.parse("2026-10-31T21:35:00+07:00");
+  const selected = "2026-10-31";
+  const state = initial();
+  state.sessions = [
+    { id: "evening", name: "ฝึกภาษา", date: selected, start: 1230, duration: 30, status: "done", fixed: false, reminder: 10 },
+  ];
+  const response = previewNextUntimedAdd(state, selected, "เพิ่ม หางานต่อไป", nowLocal);
+  assert.equal(response?.command, undefined);
+  assert.equal(response?.followUps?.length, undefined);
+  assert.match(response?.reason ?? "", /ยังไม่ได้เพิ่มกิจกรรม/);
+  assert.equal(previewNextUntimedAdd(state, selected, "ช่วยแนะนำงานต่อไป", nowLocal), undefined);
+});
+
+test("next job in PlannerService bypasses local-model time guesses and requires explicit choice", async () => {
+  const seed = initial();
+  seed.sessions = [
+    { id: "english", name: "ฝึกภาษาอังกฤษ youtube", date: future, start: 1230, duration: 15, status: "planned", fixed: false, reminder: 10 },
+  ];
+  const { p, ai } = fixture(seed);
+  ai.plannerCompletion = async () => { throw new Error("model must not invent an afternoon slot"); };
+  const response = await p.chat({
+    ...dto, date: future, requestId: "next-job-no-duration",
+    message: "เพิ่ม หางานต่อไป", autoApply: true,
+  });
+  assert.match(response.message.content, /21:00/);
+  assert.match(response.message.content, /ยังไม่ได้บันทึก/);
+  assert.equal(response.message.appliedChanges, undefined);
+  assert.ok(response.message.followUps?.length);
+  assert.equal((await p.get()).sessions.length, 1);
 });
