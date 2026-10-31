@@ -28,6 +28,8 @@ function setup(ai: any) {
       findMany: async () => [...rows].reverse(),
     },
     memory: { findMany: async () => [] },
+    // The gateway reads planner context even for ordinary chats.
+    plannerStore: { findUnique: async () => null },
   };
   const socket: any = {
     id: "socket",
