@@ -660,7 +660,7 @@ export function parseColloquialHourlyAdd(
 }
 
 /**
- * "เพิ่ม หางานต่อไป" means propose a NEW task after today's existing agenda,
+ * "เพิ่ม หางานต่อไป" / "ต่อจากนั้นเพิ่ม ฝึกภาษาอังกฤษ" mean a NEW task\n * after the latest existing agenda entry,
  * not invent a past clock or silently commit a model-guessed duration.
  * Only an explicit choice containing both time and duration may be saved.
  */
@@ -673,11 +673,14 @@ export function previewNextUntimedAdd(
   const text = message.trim();
   if (/[?？]|(?:ไหม|หรือเปล่า|ช่วยเสนอ|แนะนำ)/u.test(text) ||
       /\d{1,2}:\d{2}/u.test(text)) return undefined;
+  // "ต่อจากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ" refers to the latest
+  // scheduled task, just like "เพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษต่อไป".
+  // Both forms must bypass model-generated clock times.
   const match = text.match(
-    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ช่วย|ขอ)\s*)?เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)\s*(?:เป็นกิจกรรมต่อไป|ต่อไป|ถัดไป)\s*(?:หน่อย|ให้ด้วย|ด้วย|นะ|ค่ะ|ครับ)?$/u,
+    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ช่วย|ขอ)\s*)?(?:(?:ต่อจากนั้น|หลังจากนั้น|จากนั้น|แล้ว)\s*เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)|เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)\s*(?:เป็นกิจกรรมต่อไป|ต่อไป|ถัดไป))\s*(?:หน่อย|ให้ด้วย|ด้วย|นะ|ค่ะ|ครับ)?$/u,
   );
   if (!match) return undefined;
-  const name = match[2].trim().replace(/\s+/gu, " ");
+  const name = (match[2] ?? match[3]).trim().replace(/\s+/gu, " ");
   if (!name || name.length > 120 || !/[\p{L}]/u.test(name) ||
       /^(?:เวลา|ระยะเวลา|อีก)/u.test(name)) return undefined;
   const days = match[1] === "วันนี้" ? 0 :
