@@ -128,6 +128,17 @@ const longDate = (d: string) =>
     month: "long",
   });
 
+/** Planner chat receipts are historical snapshots; show the current slot too
+ * when a later edit changes the schedule (instead of displaying conflicting times). */
+function receiptCurrentSession(change: AppliedChange): Session | undefined {
+  return sessions.value.find((session) => session.id === change.id);
+}
+function receiptHasChanged(change: AppliedChange): boolean {
+  const current = receiptCurrentSession(change);
+  return !!current && (current.date !== change.date ||
+    current.start !== change.start || current.duration !== change.duration ||
+    current.name !== change.name || current.status !== change.status);
+}
 function actualFinishedClock(session: Session) {
   if (!session.completedAt) return "";
   const completed = new Date(session.completedAt);
@@ -1240,6 +1251,15 @@ watch(advanced, (value) => {
                 {{ c.name }} · {{ c.date }} {{ clock(c.start) }}–{{ clock(c.start + c.duration) }}
                 <span v-if="c.previousDuration !== undefined">
                   · {{ c.previousDuration }} → {{ c.duration }} นาที
+                </span>
+                <span v-if="receiptHasChanged(c)">
+                  · บันทึกเดิม — ตารางปัจจุบัน:
+                  {{ receiptCurrentSession(c)?.date }}
+                  {{ clock(receiptCurrentSession(c)!.start) }}–{{ clock(receiptCurrentSession(c)!.start + receiptCurrentSession(c)!.duration) }}
+                  ({{ receiptCurrentSession(c)!.duration }} นาที)
+                </span>
+                <span v-else-if="!receiptCurrentSession(c)">
+                  · รายการนี้ไม่อยู่ในตารางแล้ว
                 </span>
               </p>
             </div>

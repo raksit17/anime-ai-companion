@@ -32,6 +32,7 @@ import {
   parseExistingTimeMove,
   parseScheduledAdd,
   parseUntimedSingleAdd,
+  previewNextUntimedAdd,
   parseColloquialHourlyAdd,
   parseMultipleNewTasks,
   parseNaturalThaiTimedBatch,
@@ -957,7 +958,8 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
           // normalization path; preserve it to avoid changing that flow.
           parseColloquialHourlyAdd(snapshot, dto.date, dto.message) ??
           (simpleAddFromMessage(dto.message) ? undefined :
-            parseUntimedSingleAdd(dto.message, dto.date)));
+            (previewNextUntimedAdd(snapshot, dto.date, dto.message) ??
+            parseUntimedSingleAdd(dto.message, dto.date))));
       // A clear clock in a scheduling request must never fall through to
       // an unconstrained AI add with start omitted or misread.
       const unparsedClockRequest =

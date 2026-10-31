@@ -659,6 +659,85 @@ export function parseColloquialHourlyAdd(
   };
 }
 
+/**
+ * "เพิ่ม หางานต่อไป" means propose a NEW task after today's existing agenda,
+ * not invent a past clock or silently commit a model-guessed duration.
+ * Only an explicit choice containing both time and duration may be saved.
+ */
+export function previewNextUntimedAdd(
+  state: State,
+  selected: string,
+  message: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const text = message.trim();
+  if (/[?？]|(?:ไหม|หรือเปล่า|ช่วยเสนอ|แนะนำ)/u.test(text) ||
+      /\d{1,2}:\d{2}/u.test(text)) return undefined;
+  const match = text.match(
+    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ช่วย|ขอ)\s*)?เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)\s*(?:เป็นกิจกรรมต่อไป|ต่อไป|ถัดไป)\s*(?:หน่อย|ให้ด้วย|ด้วย|นะ|ค่ะ|ครับ)?$/u,
+  );
+  if (!match) return undefined;
+  const name = match[2].trim().replace(/\s+/gu, " ");
+  if (!name || name.length > 120 || !/[\p{L}]/u.test(name) ||
+      /^(?:เวลา|ระยะเวลา|อีก)/u.test(name)) return undefined;
+  const days = match[1] === "วันนี้" ? 0 :
+    ["พรุ่งนี้", "พรุ้งนี้"].includes(match[1]) ? 1 :
+    match[1]?.startsWith("มะรืน") ? 2 : undefined;
+  const date = days === undefined ? selected :
+    new Date(Date.parse(today(now)) + days * 86400000).toISOString().slice(0, 10);
+  if (!validDate(date) || date < today(now))
+    return { reason: "วันที่เลือกผ่านไปแล้ว กรุณาเลือกวันนี้หรือวันในอนาคตก่อนนะคะ ยังไม่ได้เพิ่มงาน" };
+
+  const dayTasks = state.sessions.filter((task) =>
+    task.date === date && (task.status === "planned" || task.status === "done") &&
+    task.historicalTimeAccuracy !== "unknown");
+  const lastEnd = dayTasks.reduce((end, task) =>
+    Math.max(end, task.start + task.duration), 0);
+  const gap = Math.max(15, state.settings.breakMinutes);
+  const localNowMinutes = date === today(now)
+    ? Math.ceil((now - timestamp(date, 0)) / 60000)
+    : 0;
+  const earliest = Math.max(
+    state.settings.wake,
+    localNowMinutes,
+    dayTasks.length ? lastEnd + gap : 0,
+  );
+  const firstSlot = Math.ceil(earliest / 15) * 15;
+  const choices: { start: number; duration: number }[] = [];
+  for (const duration of [30, 15]) {
+    for (let start = firstSlot;
+      start + duration <= state.settings.sleep && start <= 1439;
+      start += 15) {
+      const candidate: Session = {
+        id: "preview-next-add", goalId: "daily:preview-next-add",
+        date, name, start, duration, status: "planned",
+        fixed: false, reminder: 10,
+      };
+      if (fits(state, candidate, now)) {
+        choices.push({ start, duration });
+        break;
+      }
+    }
+  }
+  if (!choices.length)
+    return { reason: "วันที่ " + date +
+      " ไม่มีเวลาว่างหลังรายการสุดท้ายที่เว้นพักครบและยังไม่ผ่านไปแล้วสำหรับ " +
+      name + " กรุณาเลือกวันอื่นค่ะ ยังไม่ได้เพิ่มกิจกรรม" };
+  return {
+    reason: "ฉันพบช่วงว่างหลังกิจกรรมสุดท้ายของวันที่ " + date + " สำหรับ " +
+      name + ": " + choices.map((choice) =>
+        formatMinutes(choice.start) + "–" +
+        formatMinutes(choice.start + choice.duration) +
+        " (" + choice.duration + " นาที)").join(" หรือ ") +
+      " อยากเลือกช่วงไหนคะ? ยังไม่ได้บันทึกตารางค่ะ",
+    followUps: choices.map(({ start, duration }) => ({
+      label: name + " " + formatMinutes(start) + " (" + duration + " นาที)",
+      prompt: "เพิ่มงาน " + name + " วันที่ " + date +
+        " เวลา " + formatMinutes(start) + " นาน " + duration + " นาที",
+    })),
+  };
+}
+
 export function parseUntimedSingleAdd(
   message: string,
   selected: string,
