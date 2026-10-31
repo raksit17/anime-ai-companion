@@ -161,6 +161,7 @@ function fixture(seed = initial()) {
       }),
     },
     memory: { findMany: async () => [] },
+    message: { findMany: async () => [] },
     $transaction: async (fn: any) => {
       let draft = structuredClone(stored);
       const r = await fn({
