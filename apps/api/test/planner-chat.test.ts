@@ -3490,7 +3490,7 @@ test("screenshot regression: next job after 20:30–20:45 is proposed at 21:00, 
 });
 
 test("next untimed add never proposes already-passed time or invents a saved duration", () => {
-  const nowLocal = Date.parse("2026-10-31T21:35:00+07:00");
+  const nowLocal = Date.parse("2026-10-31T21:53:00+07:00");
   const selected = "2026-10-31";
   const state = initial();
   state.sessions = [
