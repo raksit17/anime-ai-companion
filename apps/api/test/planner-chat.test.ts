@@ -3521,3 +3521,56 @@ test("next job in PlannerService bypasses local-model time guesses and requires 
   assert.ok(response.message.followUps?.length);
   assert.equal((await p.get()).sessions.length, 1);
 });
+
+test("screenshot regression: 'ต่อจากนั้นเพิ่ม' follows the 21:00–21:30 IQ session, not the 16:00 game", () => {
+  const when = Date.parse("2026-10-31T20:56:00+07:00");
+  const day = "2026-10-31";
+  const state = initial();
+  state.settings.sleep = 1410; // screenshot: 23:30 bedtime
+  state.settings.maxMinutes = 720;
+  state.sessions = [
+    { id: "coral", name: "เล่นเกม Coral Island", date: day, start: 960, duration: 60, status: "done", fixed: false, reminder: 10 },
+    { id: "gym", name: "ออกกำลังกาย", date: day, start: 1020, duration: 30, status: "done", fixed: false, reminder: 10 },
+    { id: "youtube", name: "ฝึกภาษาอังกฤษ YouTube", date: day, start: 1230, duration: 15, status: "done", fixed: false, reminder: 10 },
+    { id: "iq", name: "ฝึก iq", date: day, start: 1260, duration: 30, status: "planned", fixed: false, reminder: 10 },
+  ];
+  const initialState = structuredClone(state);
+  for (const phrase of [
+    "ต่อจากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ",
+    "ต่อจากนั้น เพิ่มงาน ฝึกสัมภาษณ์ภาษาอังกฤษ",
+    "หลังจากนั้นเพิ่มกิจกรรม ฝึกสัมภาษณ์ภาษาอังกฤษ",
+    "จากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ",
+    "เพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษต่อไป",
+  ]) {
+    const answer = previewNextUntimedAdd(state, day, phrase, when);
+    assert.equal(answer?.command, undefined, phrase);
+    assert.match(answer?.reason ?? "", /21:45–22:15/, phrase);
+    assert.doesNotMatch(answer?.reason ?? "", /15:00/, phrase);
+    assert.deepEqual(answer?.followUps?.map((x) => x.label), [
+      "ฝึกสัมภาษณ์ภาษาอังกฤษ 21:45 (30 นาที)",
+      "ฝึกสัมภาษณ์ภาษาอังกฤษ 21:45 (15 นาที)",
+    ], phrase);
+    const selected = parseScheduledAdd(answer!.followUps![0].prompt!, day, when);
+    assert.equal(selected?.command?.start, 1305);
+    assert.equal(selected?.command?.duration, 30);
+  }
+  assert.deepEqual(state, initialState);
+});
+
+test("PlannerService: afterwards add is advisory and never asks Ollama to guess a past time", async () => {
+  const state = initial();
+  state.settings.sleep = 1410;
+  state.sessions = [
+    { id: "iq", name: "ฝึก iq", date: future, start: 1260, duration: 30, status: "planned", fixed: false, reminder: 10 },
+  ];
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => { throw new Error("next activity must bypass model"); };
+  const answer = await p.chat({
+    ...dto, date: future, message: "ต่อจากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ",
+    requestId: "next-after-iq-2145", autoApply: true,
+  });
+  assert.match(answer.message.content, /21:45–22:15/);
+  assert.equal(answer.message.appliedChanges, undefined);
+  assert.equal(answer.message.followUps?.[0].label, "ฝึกสัมภาษณ์ภาษาอังกฤษ 21:45 (30 นาที)");
+  assert.equal((await p.get()).sessions.length, 1);
+});
