@@ -33,6 +33,7 @@ import {
   parseScheduledAdd,
   parseUntimedSingleAdd,
   previewNextUntimedAdd,
+  completeNextUntimedAdd,
   parseColloquialHourlyAdd,
   parseMultipleNewTasks,
   parseNaturalThaiTimedBatch,
@@ -954,6 +955,7 @@ export class PlannerService implements OnModuleInit, OnModuleDestroy {
         (replaceRejectedAddStart(history, dto.message, dto.date) ??
           parseScheduledAdd(dto.message, dto.date) ??
           completeScheduledAdd(history, dto.message, dto.date) ??
+          completeNextUntimedAdd(snapshot, history, dto.message, dto.date) ??
           // Legacy day-prefixed simple adds already have a validated
           // normalization path; preserve it to avoid changing that flow.
           parseColloquialHourlyAdd(snapshot, dto.date, dto.message) ??

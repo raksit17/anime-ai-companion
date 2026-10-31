@@ -660,7 +660,7 @@ export function parseColloquialHourlyAdd(
 }
 
 /**
- * "เพิ่ม หางานต่อไป" means propose a NEW task after today's existing agenda,
+ * "เพิ่ม หางานต่อไป" / "ต่อจากนั้นเพิ่ม ฝึกภาษาอังกฤษ" mean a NEW task\n * after the latest existing agenda entry,
  * not invent a past clock or silently commit a model-guessed duration.
  * Only an explicit choice containing both time and duration may be saved.
  */
@@ -673,11 +673,14 @@ export function previewNextUntimedAdd(
   const text = message.trim();
   if (/[?？]|(?:ไหม|หรือเปล่า|ช่วยเสนอ|แนะนำ)/u.test(text) ||
       /\d{1,2}:\d{2}/u.test(text)) return undefined;
+  // "ต่อจากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ" refers to the latest
+  // scheduled task, just like "เพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษต่อไป".
+  // Both forms must bypass model-generated clock times.
   const match = text.match(
-    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ช่วย|ขอ)\s*)?เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)\s*(?:เป็นกิจกรรมต่อไป|ต่อไป|ถัดไป)\s*(?:หน่อย|ให้ด้วย|ด้วย|นะ|ค่ะ|ครับ)?$/u,
+    /^(?:(วันนี้|พรุ่งนี้|พรุ้งนี้|มะรืน(?:นี้)?)\s*)?(?:(?:ช่วย|ขอ)\s*)?(?:(?:ต่อจากนั้น|หลังจากนั้น|จากนั้น|แล้ว)\s*เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)|เพิ่ม(?:งาน|กิจกรรม)?\s*(.+?)\s*(?:เป็นกิจกรรมต่อไป|ต่อไป|ถัดไป))\s*(?:หน่อย|ให้ด้วย|ด้วย|นะ|ค่ะ|ครับ)?$/u,
   );
   if (!match) return undefined;
-  const name = match[2].trim().replace(/\s+/gu, " ");
+  const name = (match[2] ?? match[3]).trim().replace(/\s+/gu, " ");
   if (!name || name.length > 120 || !/[\p{L}]/u.test(name) ||
       /^(?:เวลา|ระยะเวลา|อีก)/u.test(name)) return undefined;
   const days = match[1] === "วันนี้" ? 0 :
@@ -735,6 +738,57 @@ export function previewNextUntimedAdd(
       prompt: "เพิ่มงาน " + name + " วันที่ " + date +
         " เวลา " + formatMinutes(start) + " นาน " + duration + " นาที",
     })),
+  };
+}
+
+/**
+ * A short duration reply to the latest "add next" preview is a selection,
+ * not a new model planning request. Only re-use a structured follow-up prompt
+ * whose exact slot is STILL offered by the current, validated calendar.
+ */
+export function completeNextUntimedAdd(
+  state: State,
+  history: { role: string; content: string; outcome?: string;
+    followUps?: PlannerFollowUp[] }[],
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const answer = message.trim().match(
+    /^(?:(?:นาน|ใช้เวลา|ระยะเวลา)\s*)?(\d{1,3})\s*(นาที|ชั่วโมง)\s*(?:ครับ|ค่ะ|นะ|เลย)?$/u,
+  );
+  if (!answer) return undefined;
+  const previousReply = history.at(-1), previousUser = history.at(-2);
+  if (previousReply?.role !== "assistant" ||
+      !previousReply.outcome?.startsWith("ยังไม่ได้เปลี่ยนตาราง") ||
+      previousUser?.role !== "user" ||
+      !previousReply.followUps?.length) return undefined;
+  const proposed = previewNextUntimedAdd(state, selected, previousUser.content, now);
+  if (!proposed) return undefined;
+
+  const duration = durationFromUnit(answer[1], answer[2]);
+  const requested = previousReply.followUps
+    .map((option) => ({
+      prompt: option.prompt,
+      command: option.prompt
+        ? parseScheduledAdd(option.prompt, selected, now)?.command
+        : undefined,
+    }))
+    .find(({ command }) =>
+      command?.type === "add" && command.duration === duration &&
+      command.start !== undefined);
+
+  // A later edit, elapsed start, or changed quota may invalidate an old option.
+  // Do not silently move the task to a different time on a duration-only answer.
+  if (requested?.prompt &&
+      proposed.followUps?.some((option) => option.prompt === requested.prompt)) {
+    return { command: requested.command };
+  }
+  return {
+    reason: "ช่วงเวลาหรือระยะเวลาที่เลือกไม่ตรงกับตัวเลือกที่ยังใช้ได้ค่ะ " +
+      (proposed.reason ?? "กรุณาเลือกช่วงเวลาใหม่") +
+      " ยังไม่ได้เพิ่มกิจกรรม",
+    followUps: proposed.followUps ?? [],
   };
 }
 
