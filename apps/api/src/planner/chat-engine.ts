@@ -741,6 +741,57 @@ export function previewNextUntimedAdd(
   };
 }
 
+/**
+ * A short duration reply to the latest "add next" preview is a selection,
+ * not a new model planning request. Only re-use a structured follow-up prompt
+ * whose exact slot is STILL offered by the current, validated calendar.
+ */
+export function completeNextUntimedAdd(
+  state: State,
+  history: { role: string; content: string; outcome?: string;
+    followUps?: PlannerFollowUp[] }[],
+  message: string,
+  selected: string,
+  now = Date.now(),
+): ScheduledAddIntent | undefined {
+  const answer = message.trim().match(
+    /^(?:(?:นาน|ใช้เวลา|ระยะเวลา)\s*)?(\d{1,3})\s*(นาที|ชั่วโมง)\s*(?:ครับ|ค่ะ|นะ|เลย)?$/u,
+  );
+  if (!answer) return undefined;
+  const previousReply = history.at(-1), previousUser = history.at(-2);
+  if (previousReply?.role !== "assistant" ||
+      !previousReply.outcome?.startsWith("ยังไม่ได้เปลี่ยนตาราง") ||
+      previousUser?.role !== "user" ||
+      !previousReply.followUps?.length) return undefined;
+  const proposed = previewNextUntimedAdd(state, selected, previousUser.content, now);
+  if (!proposed) return undefined;
+
+  const duration = durationFromUnit(answer[1], answer[2]);
+  const requested = previousReply.followUps
+    .map((option) => ({
+      prompt: option.prompt,
+      command: option.prompt
+        ? parseScheduledAdd(option.prompt, selected, now)?.command
+        : undefined,
+    }))
+    .find(({ command }) =>
+      command?.type === "add" && command.duration === duration &&
+      command.start !== undefined);
+
+  // A later edit, elapsed start, or changed quota may invalidate an old option.
+  // Do not silently move the task to a different time on a duration-only answer.
+  if (requested?.prompt &&
+      proposed.followUps?.some((option) => option.prompt === requested.prompt)) {
+    return { command: requested.command };
+  }
+  return {
+    reason: "ช่วงเวลาหรือระยะเวลาที่เลือกไม่ตรงกับตัวเลือกที่ยังใช้ได้ค่ะ " +
+      (proposed.reason ?? "กรุณาเลือกช่วงเวลาใหม่") +
+      " ยังไม่ได้เพิ่มกิจกรรม",
+    followUps: proposed.followUps ?? [],
+  };
+}
+
 export function parseUntimedSingleAdd(
   message: string,
   selected: string,
