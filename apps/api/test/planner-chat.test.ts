@@ -14,6 +14,7 @@ import {
   parseScheduledAdd,
   parseUntimedSingleAdd,
   previewNextUntimedAdd,
+  completeNextUntimedAdd,
   parseColloquialHourlyAdd,
   completeScheduledAdd,
   replaceRejectedAddStart,
@@ -3573,4 +3574,59 @@ test("PlannerService: afterwards add is advisory and never asks Ollama to guess 
   assert.equal(answer.message.appliedChanges, undefined);
   assert.equal(answer.message.followUps?.[0].label, "ฝึกสัมภาษณ์ภาษาอังกฤษ 21:45 (30 นาที)");
   assert.equal((await p.get()).sessions.length, 1);
+});
+
+test("duration-only follow-up saves the previously proposed 21:45 slot, not 15:00", async () => {
+  const state = initial();
+  state.settings.sleep = 1410;
+  state.sessions = [
+    { id: "iq", name: "ฝึก iq", date: future, start: 1260, duration: 30, status: "planned", fixed: false, reminder: 10 },
+  ];
+  const { p, ai } = fixture(state);
+  ai.plannerCompletion = async () => { throw new Error("duration reply must not use model"); };
+  const preview = await p.chat({
+    ...dto, date: future, message: "ต่อจากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ",
+    requestId: "next-english-preview-2145", autoApply: true,
+  });
+  assert.equal(preview.message.appliedChanges, undefined);
+  assert.equal((await p.get()).sessions.length, 1);
+
+  const confirmed = await p.chat({
+    ...dto, date: future, message: "30 นาที",
+    requestId: "next-english-duration-30", autoApply: true,
+  });
+  assert.equal(confirmed.message.outcome, "บันทึกตารางแล้ว");
+  assert.match(confirmed.message.content, /21:45–22:15/);
+  assert.equal(confirmed.message.appliedChanges?.[0]?.start, 1305);
+  assert.equal(confirmed.message.appliedChanges?.[0]?.duration, 30);
+  assert.equal(confirmed.message.appliedChanges?.[0]?.name, "ฝึกสัมภาษณ์ภาษาอังกฤษ");
+  const saved = (await p.get()).sessions;
+  assert.equal(saved.length, 2);
+  assert.equal(saved.find((s: any) => s.name === "ฝึกสัมภาษณ์ภาษาอังกฤษ")?.start, 1305);
+});
+
+test("a stale duration-only next-task follow-up cannot silently shift to a later slot", () => {
+  const day = "2026-10-31", now = Date.parse("2026-10-31T20:54:00+07:00");
+  const base = initial();
+  base.settings.sleep = 1410;
+  base.sessions = [
+    { id: "iq", name: "ฝึก iq", date: day, start: 1260, duration: 30, status: "planned", fixed: false, reminder: 10 },
+  ];
+  const userMessage = "ต่อจากนั้นเพิ่ม ฝึกสัมภาษณ์ภาษาอังกฤษ";
+  const preview = previewNextUntimedAdd(base, day, userMessage, now)!;
+  const history = [
+    { role: "user", content: userMessage },
+    { role: "assistant", content: preview.reason!, outcome: "ยังไม่ได้เปลี่ยนตาราง · " + preview.reason,
+      followUps: preview.followUps },
+  ];
+  const altered = structuredClone(base);
+  altered.sessions.push({
+    id: "meeting", name: "นัด", date: day,
+    start: 1305, duration: 30, status: "planned", fixed: true, reminder: 10,
+  });
+  const reply = completeNextUntimedAdd(altered, history, "30 นาที", day, now);
+  assert.equal(reply?.command, undefined);
+  assert.match(reply?.reason ?? "", /ยังไม่ได้เพิ่มกิจกรรม/);
+  assert.ok(reply?.followUps?.some((c) => (c.prompt ?? "").includes("22:30")));
+  assert.equal(completeNextUntimedAdd(base, [], "30 นาที", day, now), undefined);
 });
