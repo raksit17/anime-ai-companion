@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import DailyPlanner from "./components/DailyPlanner.vue";
+import McpTools from "./components/McpTools.vue";
 import DesktopSettings from "./components/DesktopSettings.vue";
 import { desktop, invoke, listen } from "./desktop";
 import VoiceControls from "./components/voice/VoiceControls.vue";
@@ -177,6 +178,10 @@ async function send() {
     // Auto Speak queues completed sentences during chat:delta; no duplicate replay.
     await chat.sendAndWait(value, AbortSignal.timeout(320000));
   });
+}
+function useMcpContext(value: string) {
+  text.value = value;
+  tab.value = "chat";
 }
 async function saveMemory() {
   await chat.guard(async () => {
@@ -359,6 +364,7 @@ async function deleteCharacter() {
           >
             ความทรงจำ <b>{{ chat.memories.length }}</b>
           </button>
+          <button :class="{ active: tab === 'mcp' }" @click="tab = 'mcp'">MCP Tools</button>
         </nav>
         <div v-if="chat.error" role="alert" class="error">
           {{ chat.error }}<button @click="chat.error = ''">×</button>
@@ -437,6 +443,7 @@ async function deleteCharacter() {
           </p></template
         >
         <DailyPlanner v-show="tab === 'planner'" />
+        <McpTools v-if="tab === 'mcp'" @use-context="useMcpContext" />
         <div v-if="tab === 'memory'" class="memory-panel">
           <p class="eyebrow">THINGS TO REMEMBER</p>
           <h2>ให้ฉันจำเรื่องของคุณ</h2>
